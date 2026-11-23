@@ -3,7 +3,9 @@
 Personal workout-logging PWA for one user (the repo owner). No build step, no package manager, no tests.
 
 ## Files
-- `index.html`: the whole app (HTML, CSS, JS in one file). Exercise library is the `LIB_RAW` text block near the top of the script.
+- `index.html`: the whole app (HTML, CSS, JS in one file). Exercise library is the `LIB_RAW` text block near the top of the script (`name|main muscles (1-3, comma-separated)|assisting muscles|equipment|type`).
+- Exercises store `muscles` (1-3 main) plus `muscle` (= first main, kept for older code and backups). Weekly volume counts 1 per set for each main muscle, 0.5 per assisting muscle. Always read muscles through `musclesOf()`, which also handles entries saved before multi-muscle support.
+- Plan generation rules (priority, weekly set targets, RIR, deloads) live in `PRIORITIES`, `PRIORITY_RULE` and `buildPrompt()`.
 - `config.js`: Supabase URL and publishable key. Public by design; data is protected by row-level security.
 - `sw.js`: service worker. Network-first for HTML/JS, cache-first for icons and fonts. Never caches Supabase or AI calls.
 - `manifest.webmanifest`, `icons/`: PWA install metadata and icons.
