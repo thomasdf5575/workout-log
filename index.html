@@ -95,6 +95,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ex{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px;display:flex;flex-direction:column;gap:10px}
 .ex-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
 .ex-head b{font-size:17px}
+.ex.done{opacity:.55;background:var(--sunk)} .ex.done .ex-head b::after{content:" ✓ Complete";font-size:13px;font-weight:600;color:var(--good)}
 .hint{font-size:14px;color:var(--muted);background:var(--sunk);border-radius:8px;padding:8px 10px}
 .hint strong{color:var(--ink)}
 .hint.stall{background:var(--warn-soft)}
@@ -111,7 +112,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .pr{display:inline-block;margin-left:6px;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 5px;border-radius:5px;background:var(--accent);color:#fff;vertical-align:middle}
 .sets td:first-child .pr{display:block;margin:2px auto 0;width:max-content}
 .check svg{width:20px;height:20px}
-.wod{background:var(--sunk);border-radius:10px;padding:12px 14px}
+.block{border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.block.str{background:var(--surface)} .block.str .plan-ex:first-of-type{border-top:0}
+.block.wod{background:var(--accent-soft)}
 .wod-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
 .clock{display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px 0}
 .clock .big{font-family:var(--display);font-weight:700;font-size:64px;line-height:1;font-variant-numeric:tabular-nums}
@@ -406,7 +409,7 @@ function defaultSettings(){return {
   experience:"intermediate", sex:"", style:"compound", priority:"both", perWeek:3, goals:"", limits:"",
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
   exLib:{custom:[],hidden:[]},
-  lastGen:{what:"strength",where:"gym",dur:60,energy:"normal",focus:"full",muscles:[]}
+  lastGen:{mix:100,where:"gym",dur:60,energy:"normal",focus:"full",muscles:[]}
 };}
 const S = {
   tab:"plan", mode:"loading", stale:false, syncText:"", authMode:"signin", authMsg:"", authBusy:false, recovery:false,
@@ -422,7 +425,7 @@ const sortedSessions=()=>[...S.sessions].sort((a,b)=>(b.date||"").localeCompare(
    offline, changes wait in a queue and are sent when the connection returns. */
 const ls={get(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},del(k){try{localStorage.removeItem(k);}catch(e){}}};
 const clone=x=>x==null?x:JSON.parse(JSON.stringify(x));
-function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(!FOCUS[lg.focus])lg.focus="full";if(!["strength","conditioning","hybrid"].includes(lg.what))lg.what="strength";return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles,activities:Array.isArray(x.activities)?x.activities:d.activities};}
+function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(!FOCUS[lg.focus])lg.focus="full";const ow=(x.lastGen||{}).what;if((x.lastGen||{}).mix===undefined&&ow)lg.mix=ow==="conditioning"?0:ow==="hybrid"?50:100;if(![0,25,50,75,100].includes(lg.mix))lg.mix=100;delete lg.what;return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles,activities:Array.isArray(x.activities)?x.activities:d.activities};}
 const CFG=window.WORKOUT_CONFIG||{};
 let sb=null, user=null;
 const k=name=>`wl.${name}.${user?user.id:"anon"}`;
@@ -733,7 +736,8 @@ function availableExercises(prof){return LIB.filter(x=>x.eq.every(q=>prof.eq.inc
 
 /* ---------------- AI generation ---------------- */
 function buildPrompt(){
-  const g=S.gen, st=S.settings, prof=profileByid(g.where), what=g.what||"strength";
+  const g=S.gen, st=S.settings, prof=profileByid(g.where), mix=mixOf(g), what=mix===100?"strength":mix===0?"conditioning":"hybrid";
+  const {sMin,cMin}=splitMinutes(g.dur,mix);
   const vol=weekVolume(), since=daysSince();
   const acts=st.activities.map(a=>({a,v:(g.acts||{})[a.id]})).filter(x=>x.v);
   const actLines=acts.map(({a,v})=>v==="more"
@@ -763,8 +767,8 @@ function buildPrompt(){
     : what==="conditioning"
     ? `You are an evidence-based coach writing ONE conditioning session (a functional-fitness style workout of the day) for a single trainee. Reply with ONLY a JSON object, no prose, shaped exactly like:
 {"kind":"conditioning","title":"short name","summary":"1-2 sentences: why this workout today","deload":false,"estMinutes":40,"warmup":"one line, using the workout's movements","exercises":[],"wod":${wodJson},"cooldown":"one line"}
-"exercises" is an optional short strength or skill part before the workout (same shape as ${exJson}); leave it empty unless there are 45+ minutes.`
-    : `You are an evidence-based coach writing ONE hybrid session for a single trainee: a strength part, then a short conditioning workout. Reply with ONLY a JSON object, no prose, shaped exactly like:
+The trainee chose 100% conditioning: "exercises" MUST be an empty list. No strength part.`
+    : `You are an evidence-based coach writing ONE hybrid session for a single trainee: a strength part (${mix}% of the training time, about ${sMin} min), then a conditioning workout (${100-mix}%, about ${cMin} min). Reply with ONLY a JSON object, no prose, shaped exactly like:
 {"kind":"hybrid","title":"short name","summary":"1-2 sentences: why this session today","deload":false,"estMinutes":60,"warmup":"one line","exercises":[${exJson}],"wod":${wodJson},"cooldown":"one line"}`;
   const wodFormats=`"wod.format" is one of: "fortime" (do "rounds" rounds of the movement list as fast as possible, "minutes" = time cap, about 1.5x the expected time), "amrap" (as many rounds as possible in "minutes"), "emom" (every minute on the minute for "minutes" minutes; minute 1 does movement 1, minute 2 movement 2, and so on, cycling; each minute's work should take 30-45 s), "intervals" ("rounds" rounds of "workSec" work and "restSec" rest; interval 1 does movement 1, interval 2 movement 2, cycling), "chipper" (the list once, top to bottom, for time; "minutes" = cap). "unit" is one of: reps, cal, m, s. Every movement needs "scaled": a lighter load, fewer reps or the easier version that keeps the same time and stimulus.`;
   const sexTxt=st.sex==="male"?"male":st.sex==="female"?"female":"not given";
@@ -775,7 +779,7 @@ function buildPrompt(){
 
 TODAY
 - Date: ${todayISO()}
-- Time available: ${g.dur} minutes in total including warm-up. ${what==="strength"?"Budget ~2.5-3 min per working set for compounds incl. rest, ~2 min for isolation, 5-8 min warm-up.":what==="hybrid"?"Split: ~10 min warm-up, ~40-45% of the time for 2-4 strength exercises, an 8-15 min conditioning workout, ~5 min cool-down.":"Split: 8-12 min warm-up, the workout, ~5 min cool-down; with 45+ minutes a 10-15 min strength or skill part may come first."}
+- Time available: ${g.dur} minutes in total including warm-up. ${what==="strength"?"Budget ~2.5-3 min per working set for compounds incl. rest, ~2 min for isolation, 5-8 min warm-up.":what==="hybrid"?`Split: ~10 min warm-up, ~${sMin} min of strength work (${mix}%, sized with the per-set budget: ~2.5-3 min per compound set, ~2 min per isolation set), a conditioning workout of ~${cMin} min (${100-mix}%), ~5 min cool-down.`:`Split: 8-12 min warm-up, a conditioning workout of ~${cMin} min (time cap or duration up to 30 min; if more time is left, extend the warm-up with skill practice for the day's movements and the cool-down with easy cardio and mobility), ~5 min cool-down.`}
 - Energy: ${g.energy} (fresh = full volume, may push${what!=="strength"?", a longer or heavier workout is fine":""}; normal = standard; tired = ~30% fewer sets, keep last weights or ~10% lighter, RIR 2-3, no new records, prefer stable/machine variants${what!=="strength"?"; a short or medium workout at moderate loads, no max efforts":""}).
 - Focus: ${focus}
 - Location: ${prof.name}. Equipment available: ${prof.eq.map(k=>EQUIP[k]).join(", ")||"none"} plus bodyweight.
@@ -794,7 +798,7 @@ TRAINEE
 - Goals in their words: ${st.goals.trim()||"none beyond the priority"}
 - Limitations / exercises to avoid: ${st.limits.trim()||"none stated"}
 
-${what==="conditioning"?"STRENGTH RULES (only for an optional strength part)":"RULES (based on current resistance-training evidence)"}
+${what==="conditioning"?"STRENGTH CONTEXT (no strength part today; use this only to understand the trainee's week)":"RULES (based on current resistance-training evidence)"}
 - Equipment: use only exercises possible with the equipment above. Prefer these names exactly: ${avail}. Other standard exercises are fine only if they need just the listed equipment.
 - Volume: for each muscle, the weekly gap is the target minus the sets in the last 7 days. Spread that gap over the remaining sessions of the week (about ${perWeek} per week), so each muscle is trained roughly twice a week. Put no more than ~8 hard sets for one muscle in a single session; beyond that, extra sets in the same session add little. Do not push muscles far above the top of the target.
 - Effort: count only working sets; warm-up sets don't count. Give every exercise a target "rir" matching the priority. Avoid sets to failure on heavy free-weight compounds (squat, deadlift, barbell rows, overhead and bench press); failure is optional on the last set of isolation or machine work.
@@ -812,7 +816,7 @@ DELOADS (lighter sessions only when needed)
 ${what==="strength"?"":`
 CONDITIONING RULES
 - Use only these movements (names exactly), possible with the equipment above: ${condMoves}. Running needs "Can run outside".
-- Vary the stimulus: pick a format and duration different from RECENT CONDITIONING; mostly short (under 8 min) and medium (8-15 min), long (16-25 min) at most once a week${what==="hybrid"?"; in a hybrid session keep it 8-15 min":""}.
+- Vary the stimulus: pick a format and duration different from RECENT CONDITIONING; mostly short (under 8 min) and medium (8-15 min), long (16-25 min) at most once a week. Today's workout should take about ${Math.min(30,cMin)} min (the trainee's chosen split).
 - 2-3 movements for short and medium workouts, up to 5-6 for a chipper. Mix a cardio piece (machine or run), a bodyweight movement and a weighted movement where possible.
 - Patterns: don't load the same pattern hard as ${what==="hybrid"?"today's main strength lift or ":""}the last 48h of training. Never pair two grip-limited movements (pull-ups, toes-to-bar, rope climbs, heavy deadlifts, kettlebell swings, carries) or two lower-back-heavy hinges (deadlifts, cleans, snatches, swings) in one workout.
 - Loads: from the trainee's estimated 1RMs where known: 40-65% for medium and long workouts, up to 75-80% for short, low-rep ones. Technical lifts (cleans, snatches) light (30-50%) and at most 10 reps per round. Without history use these defaults: ${st.sex==="female"?"wall ball 6 kg, kettlebell 16 kg, dumbbell 15 kg each, sandbag 25 kg, barbell 30 kg":st.sex==="male"?"wall ball 9 kg, kettlebell 24 kg, dumbbell 22.5 kg each, sandbag 40 kg, barbell 40 kg":"wall ball 6-9 kg, kettlebell 16-24 kg, dumbbell 15-22.5 kg each, barbell 30-40 kg (start at the lower values)"}; beginners one step lighter, advanced may go one step heavier. Then snap to the weights available here.
@@ -844,6 +848,10 @@ function normalizeWod(w){
   return {format:f,minutes:int(w.minutes,1,60)||(f==="emom"?10:12),rounds:f==="fortime"||f==="intervals"?(int(w.rounds,1,50)||(f==="intervals"?8:3)):f==="chipper"?1:null,
     workSec:f==="intervals"?(int(w.workSec,5,300)||30):null,restSec:f==="intervals"?(int(w.restSec,0,300)??30):null,movements:mv,purpose:String(w.purpose||"").slice(0,200)};
 }
+const mixOf=g=>[0,25,50,75,100].includes(g&&g.mix)?g.mix:100;
+// Minutes for strength and conditioning: total minus ~15 min of warm-up and cool-down, split by the mix.
+function splitMinutes(dur,mix){const train=Math.max(10,dur-15), sMin=Math.round(train*mix/100);return {sMin,cMin:train-sMin};}
+const mixText=(dur,mix)=>{const {sMin,cMin}=splitMinutes(dur,mix);return mix===100?`All strength · about ${sMin} min of lifting`:mix===0?`All conditioning · about ${cMin} min of work`:`Strength ${mix}% · WOD ${100-mix}% · about ${sMin} + ${cMin} min`;};
 function normalizePlan(v){
   if(!v) throw new Error("bad");
   const kind=["strength","conditioning","hybrid"].includes(v.kind)?v.kind:(v.wod?"conditioning":"strength");
@@ -873,7 +881,7 @@ async function askClaude(messages){
 async function generate(tweak){
   S.genError="";
   if(!navigator.onLine){S.genError="You're offline. Building a plan needs a connection; logging works offline.";render();return;}
-  S.settings.lastGen={what:S.gen.what||"strength",where:S.gen.where,dur:S.gen.dur,energy:S.gen.energy,focus:S.gen.focus,muscles:S.gen.muscles};saveSettings();
+  S.settings.lastGen={mix:mixOf(S.gen),where:S.gen.where,dur:S.gen.dur,energy:S.gen.energy,focus:S.gen.focus,muscles:S.gen.muscles};saveSettings();
   const prompt=buildPrompt();
   const messages=tweak&&S.plan?[{role:"user",content:prompt},{role:"assistant",content:JSON.stringify(S.plan)},{role:"user",content:`Adjust this session: ${tweak}. Keep everything else that still fits. Return the full JSON object again, same shape.`}]:[{role:"user",content:prompt}];
   S.genBusy=true;render();
@@ -881,7 +889,10 @@ async function generate(tweak){
   try{
     const text=await askClaude(messages);
     if(my!==genToken) return;
-    const plan=normalizePlan(parseJSONText(text));
+    const plan=normalizePlan(parseJSONText(text)), mx=mixOf(S.gen);
+    // Enforce the chosen split even if the reply drifts: 100% strength = no workout, 0% = no strength part.
+    if(mx===100) plan.wod=null; if(mx===0) plan.exercises=[]; plan.kind=mx===100?"strength":mx===0?"conditioning":"hybrid"; plan.mix=mx;
+    if(!plan.exercises.length&&!plan.wod) throw new Error("bad");
     S.plan={...plan,createdAt:Date.now(),gen:{where:S.gen.where,dur:S.gen.dur,energy:S.gen.energy}};
     S.tweak="";savePlan();
   }catch(e){
@@ -1057,7 +1068,9 @@ function render(){
   else if(S.stale) h+=`<div class="banner">Couldn't reach your account just now. What you see may be out of date; your changes are kept on this phone.${S.lastErr?`<br><span class="small">Details: ${esc(S.lastErr)}</span>`:""}</div>`;
   h+=(S.tab==="plan"&&needsWelcome())?viewWelcome():({plan:viewPlan,log:viewLog,history:viewHistory,setup:viewSetup})[S.tab]();
   m.innerHTML=h; m.scrollTop=y;
-  const r=$("#dur"); if(r) r.addEventListener("input",()=>{S.gen.dur=+r.value;$("#durOut").textContent=r.value+" min";});
+  const mixUpd=()=>{const o=$("#mixOut"),t=mixText(S.gen.dur,mixOf(S.gen));if(o)o.textContent=t;const mx=$("#mix");if(mx)mx.setAttribute("aria-valuetext",t);};
+  const r=$("#dur"); if(r) r.addEventListener("input",()=>{S.gen.dur=+r.value;$("#durOut").textContent=r.value+" min";mixUpd();});
+  const mx=$("#mix"); if(mx) mx.addEventListener("input",()=>{S.gen.mix=100-(+mx.value);mixUpd();});
 }
 function chip(label,on,a,v,extra=""){return `<button class="chip ${extra}" data-a="${a}" data-v="${esc(v)}" aria-pressed="${on?"true":"false"}">${esc(label)}</button>`;}
 
@@ -1082,7 +1095,10 @@ function viewWelcome(){
 function viewPlan(){
   const g=S.gen, st=S.settings;
   let h=`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
-  <div class="field"><p class="lbl">What</p><div class="seg">${[["strength","Strength"],["conditioning","Conditioning (WOD)"],["hybrid","Hybrid"]].map(([k,l])=>chip(l,(g.what||"strength")===k,"gen-what",k)).join("")}</div></div>
+  <div class="field"><label class="lbl" for="mix">Strength or conditioning (WOD)</label>
+    <div class="row between small muted" style="margin-bottom:-4px"><span>Strength</span><span>WOD</span></div>
+    <input type="range" id="mix" min="0" max="100" step="25" value="${100-mixOf(g)}" aria-valuetext="${esc(mixText(g.dur,mixOf(g)))}">
+    <output id="mixOut" class="small">${esc(mixText(g.dur,mixOf(g)))}</output></div>
   <div class="field"><p class="lbl">Where</p><div class="seg">${st.profiles.map(p=>chip(p.name,g.where===p.id,"gen-where",p.id)).join("")}</div></div>
   <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div></div>
@@ -1106,8 +1122,7 @@ function viewPlanCard(p){
   let h=`<section class="card" aria-labelledby="ph"><div><p class="lbl">${created?`Generated ${created.toLocaleDateString(undefined,{day:"numeric",month:"short"})}, ${created.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"})}`:"Plan"} · about ${p.estMinutes} min${p.deload?` · <b>Lighter (deload) session</b>`:""}</p><h2 id="ph">${esc(p.title)}</h2></div>`;
   if(p.summary) h+=`<p style="margin:0">${esc(p.summary)}</p>`;
   if(p.warmup) h+=`<div class="callout"><b>Warm-up.</b> ${esc(p.warmup)}</div>`;
-  if(p.exercises.length&&p.wod) h+=`<p class="lbl" style="margin:0">Strength</p>`;
-  h+=`<div>${p.exercises.map((e,i)=>`<div class="plan-ex"><span class="num">${i+1}</span><div><div class="row between"><b>${esc(e.name)}</b><span>${mainTags(musclesOf(e).primary)}</span></div>${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}
+  if(p.exercises.length) h+=`<div class="block str"><p class="lbl" style="margin:0">Strength</p>${p.exercises.map((e,i)=>`<div class="plan-ex"><span class="num">${i+1}</span><div><div class="row between"><b>${esc(e.name)}</b><span>${mainTags(musclesOf(e).primary)}</span></div>${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}
     <div class="spec">${e.sets} × ${esc(e.reps)}${e.weight?` @ ${fmtKg(e.weight)} kg${perHand(e.name)?" each":""}`:""}${e.rir!=null?` <span class="muted small">· ${rirText(e.rir)}</span>`:""} <span class="muted small">· rest ${Math.floor(e.restSec/60)}:${String(e.restSec%60).padStart(2,"0")}</span></div>
     ${e.note?`<div class="muted small">${esc(e.note)}</div>`:""}</div></div>`).join("")}</div>`;
   if(p.wod) h+=viewWodCard(p.wod);
@@ -1119,7 +1134,7 @@ function viewPlanCard(p){
 }
 // The workout itself: format, movements, scaled version and purpose (used on the Plan and Log tabs).
 function viewWodCard(w){
-  return `<div class="wod"><p class="lbl" style="margin:0">Workout</p><h3 style="margin:2px 0 6px">${esc(wodTitle(w))}</h3>
+  return `<div class="block wod"><p class="lbl" style="margin:0">Conditioning</p><h3 style="margin:2px 0 6px">${esc(wodTitle(w))}</h3>
     <ol class="wod-list">${w.movements.map(m=>`<li><b>${esc(moveText(m))}</b>${m.scaled?`<br><span class="muted small">Scaled: ${esc(moveText(m,true))}</span>`:""}</li>`).join("")}</ol>
     ${w.purpose?`<p class="small" style="margin:6px 0 0"><b>Aim:</b> ${esc(w.purpose)}</p>`:""}</div>`;
 }
@@ -1148,7 +1163,8 @@ function viewLog(){
   if(d.wod&&d.exercises.length) h+=`<p class="lbl" style="margin:0 4px">Strength</p>`;
   d.exercises.forEach((e,i)=>{
     const hint=d.editing?null:hintFor(e.name), best=bestBefore(e.name,d.date,d.id,d.editing?d.savedAt:Infinity);
-    h+=`<section class="ex" aria-label="${esc(e.name)}"><div class="ex-head"><div><b>${esc(e.name)}</b> ${mainTags(musclesOf(e).primary)}${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}</div>
+    const allDone=e.sets.length&&e.sets.every(x=>x.done);
+    h+=`<section class="ex ${allDone?"done":""}" aria-label="${esc(e.name)}${allDone?" (complete)":""}"><div class="ex-head"><div><b>${esc(e.name)}</b> ${mainTags(musclesOf(e).primary)}${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}</div>
       <div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn ghost" data-a="ex-up" data-i="${i}" aria-label="Move up" ${i===0?"disabled":""}>↑</button><button class="btn ghost danger" data-a="ex-del" data-i="${i}" aria-label="Remove ${esc(e.name)}" aria-expanded="${S.confirm==="exdel-"+i?"true":"false"}">✕</button></div></div>`;
     if(S.confirm==="exdel-"+i) h+=`<div class="inline-confirm" role="alertdialog" aria-label="Confirm removal"><span class="small">Remove ${esc(e.name)} from this workout?${e.sets.some(s=>num(s.r)>0)?" The sets you entered will be lost.":""}</span><button class="btn danger" data-a="ex-del-yes" data-i="${i}">Remove</button><button class="btn" data-a="confirm-no">Keep</button></div>`;
     const tgt=e.target||{};
@@ -1279,9 +1295,9 @@ function viewLibrary(){
   const dn=new Set(DEFAULT_LIB.map(x=>norm(x.name)));
   // Body-part filter (any main muscle) + exercise dropdown, then the selected exercise's details.
   const list=LIB.filter(x=>!S.libFilter||x.muscles.includes(S.libFilter)).sort((a,b)=>a.name.localeCompare(b.name));
-  if(!list.some(x=>x.name===S.libSel)) S.libSel=list[0]?list[0].name:"";
+  if(!list.some(x=>x.name===S.libSel)) S.libSel="";
   h+=`<div class="row" style="flex-wrap:nowrap;align-items:flex-end"><div class="field" style="flex:0 0 40%"><label class="lbl" for="libFilter">Body part</label><select id="libFilter" data-in="lib-filter"><option value="">All (${LIB.length})</option>${MUSCLES.map(m=>{const n=LIB.filter(x=>x.muscles.includes(m)).length;return n?`<option value="${m}" ${S.libFilter===m?"selected":""}>${cap(m)} (${n})</option>`:"";}).join("")}</select></div>
-    <div class="field" style="flex:1;min-width:0"><label class="lbl" for="libSel">Exercise</label><select id="libSel" data-in="lib-sel">${list.map(x=>`<option value="${esc(x.name)}" ${x.name===S.libSel?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>`;
+    <div class="field" style="flex:1;min-width:0"><label class="lbl" for="libSel">Exercise</label><select id="libSel" data-in="lib-sel"><option value="" ${S.libSel?"":"selected"}>Choose an exercise…</option>${list.map(x=>`<option value="${esc(x.name)}" ${x.name===S.libSel?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>`;
   const x=list.find(e=>e.name===S.libSel);
   if(x){const key=norm(x.name);
     h+=`<div class="prof" style="gap:6px"><div><b>${esc(x.name)}</b>${x.custom?` <span class="muted small">(${dn.has(key)?"edited":"added"})</span>`:""}</div>
@@ -1297,17 +1313,21 @@ function viewLibrary(){
 function viewSetup(){
   const st=S.settings;
   let h=`<div class="row between" style="position:sticky;top:0;z-index:2;background:var(--bg);padding:4px 0"><span class="muted small" id="saveState" role="status">Changes save automatically</span><button class="btn primary" data-a="settings-save">Save</button></div>`;
-  h+=`<section class="card"><h2>Locations and equipment</h2><p class="muted small" style="margin:0">The generator only picks exercises you can do with what's ticked. Bodyweight work is always allowed.</p>
+  const locH=`<section class="card"><h2>Locations and equipment</h2><p class="muted small" style="margin:0">The generator only picks exercises you can do with what's ticked. Bodyweight work is always allowed.</p>
   ${st.profiles.map((p,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="pn-${i}">Location name</label><input type="text" id="pn-${i}" data-in="prof-name" data-i="${i}" value="${esc(p.name)}">${st.profiles.length>1?`<button class="btn ghost danger xbtn" data-a="prof-del" data-i="${i}" aria-label="Delete ${esc(p.name)}">✕</button>`:""}</div>
     <p class="lbl" style="margin:0">Strength</p><div class="seg">${EQUIP_STRENGTH.map(k=>chip(EQUIP[k],p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div>
     <p class="lbl" style="margin:0">Conditioning</p><div class="seg">${Object.keys(EQUIP).filter(k=>!EQUIP_STRENGTH.includes(k)).map(k=>chip(EQUIP[k],p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div>
     ${viewWeights(p,i)}</div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
-  h+=viewLibrary();
-  h+=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles each activity uses. On the Plan tab, tap − to train them lightly or not at all that day, or + to give them extra work.</p>
+  const actH=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles each activity uses. On the Plan tab, tap − to train them lightly or not at all that day, or + to give them extra work.</p>
   ${st.activities.map((a,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="an-${i}">Activity name</label><input type="text" id="an-${i}" data-in="act-name" data-i="${i}" value="${esc(a.name)}"><button class="btn ghost danger xbtn" data-a="act-del" data-i="${i}" aria-label="Delete ${esc(a.name)}">✕</button></div>
     <div class="seg">${MUSCLES.map(m=>chip(cap(m),a.spare.includes(m),"act-m",i+"|"+m,"sm")).join("")}</div></div>`).join("")}
   <button class="btn" data-a="act-add">Add an activity</button></section>`;
+  if(S.setupPage==="locations"||S.setupPage==="activities") return h+`<button class="btn ghost" data-a="setup-back" style="align-self:flex-start">← Setup</button>`+(S.setupPage==="locations"?locH:actH);
+  h+=`<section class="card"><div class="exlist">
+    <button data-a="setup-page" data-v="locations"><span><b>Locations and equipment</b><br><span class="muted small">${st.profiles.map(x=>esc(x.name)).join(", ")}</span></span><span aria-hidden="true">›</span></button>
+    <button data-a="setup-page" data-v="activities"><span><b>Other activities</b><br><span class="muted small">${st.activities.map(x=>esc(x.name)).join(", ")||"None"}</span></span><span aria-hidden="true">›</span></button></div></section>`;
+  h+=viewLibrary();
   const pk=prioOf(st);
   h+=`<section class="card"><h2>About you</h2>
   <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)} About ${weeklyTarget(st).join("–")} sets per muscle per week at your experience level.</p></div>
@@ -1333,9 +1353,8 @@ document.addEventListener("click",async ev=>{
   const b=ev.target.closest("[data-a]"); if(!b) return;
   const a=b.dataset.a, v=b.dataset.v, i=+b.dataset.i, j=+b.dataset.j; const g=S.gen, st=S.settings, d=S.draft;
   switch(a){
-    case "tab": S.tab=v;S.confirm=null;render();$("#main").scrollTop=0;return;
+    case "tab": S.tab=v;S.confirm=null;S.setupPage=null;render();$("#main").scrollTop=0;return;
     case "gen-where": g.where=v;break;
-    case "gen-what": g.what=v;break;
     case "gen-energy": g.energy=v;break;
     case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
     case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
@@ -1377,6 +1396,8 @@ document.addEventListener("click",async ev=>{
     case "lib-add": S.libEdit={orig:null,name:"",muscles:[],sec:[],eq:[],type:"c",use:"b",unit:"reps",pattern:"",skill:"basic",easier:""};S.confirm=null;render();$("#libCard")?.scrollIntoView({block:"start"});return;
     case "lib-edit": {const x=LIB.find(e=>e.name===v);if(!x)break;S.libEdit={orig:x.name,name:x.name,muscles:[...x.muscles],sec:[...x.sec],eq:[...x.eq],type:x.type||"c",use:x.use,unit:x.unit,pattern:x.pattern,skill:x.skill,easier:x.easier||""};S.confirm=null;render();$("#libCard")?.scrollIntoView({block:"start"});return;}
     case "lib-cancel": S.libEdit=null;break;
+    case "setup-page": S.setupPage=v;S.confirm=null;render();$("#main").scrollTop=0;return;
+    case "setup-back": S.setupPage=null;S.confirm=null;render();$("#main").scrollTop=0;return;
     case "lib-main": {const f=S.libEdit;if(f.muscles.includes(v))f.muscles=f.muscles.filter(m=>m!==v);else if(f.muscles.length>=3){toast("Up to 3 main muscles. Untick one first.");return;}else{f.muscles.push(v);f.sec=f.sec.filter(m=>m!==v);}break;}
     case "lib-sec": {const f=S.libEdit;f.sec=f.sec.includes(v)?f.sec.filter(m=>m!==v):[...f.sec,v];break;}
     case "lib-eq": {const f=S.libEdit;f.eq=f.eq.includes(v)?f.eq.filter(k=>k!==v):[...f.eq,v];break;}
