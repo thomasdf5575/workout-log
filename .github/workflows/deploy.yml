@@ -39,5 +39,9 @@ jobs:
         with:
           path: _site
           include-hidden-files: true
+      # The artifact list can lag a moment behind the upload; deploy-pages failed twice with
+      # "No artifacts named github-pages" right after a successful upload. Give it time.
+      - name: Wait for the artifact to be listed
+        run: sleep 20
       - id: deployment
         uses: actions/deploy-pages@v5
