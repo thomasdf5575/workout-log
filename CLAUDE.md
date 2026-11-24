@@ -7,6 +7,7 @@ Personal workout-logging PWA for one user (the repo owner). No build step, no pa
 - Exercises store `muscles` (1-3 main) plus `muscle` (= first main, kept for older code and backups). Weekly volume counts 1 per set for each main muscle, 0.5 per assisting muscle. Always read muscles through `musclesOf()`, which also handles entries saved before multi-muscle support.
 - Plan generation rules (priority, weekly set targets, RIR, deloads) live in `PRIORITIES`, `PRIORITY_RULE` and `buildPrompt()`.
 - Starting numbers (`settings.baselines`) are only entered on the first-run screen (`viewWelcome`, shown while `settings.onboarded` is false and there are no sessions); after that, logged sessions drive all suggestions. Saved sessions can be edited: `draftFromSession()` loads one into the log as a draft with `editing: true`.
+- The exercise list is `LIB`: `DEFAULT_LIB` (from `LIB_RAW`) minus `settings.exLib.hidden`, with `settings.exLib.custom` entries added or replacing defaults of the same name. `rebuildLib()` runs on every render; edit the defaults in `LIB_RAW`, the person's own changes in Setup → Exercises.
 - `config.js`: Supabase URL and publishable key. Public by design; data is protected by row-level security.
 - `sw.js`: service worker. Network-first for HTML/JS, cache-first for icons and fonts. Never caches Supabase or AI calls.
 - `manifest.webmanifest`, `icons/`: PWA install metadata and icons.
