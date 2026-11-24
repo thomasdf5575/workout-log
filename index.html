@@ -1103,12 +1103,12 @@ function viewWelcome(){
 function viewPlan(){
   const g=S.gen, st=S.settings;
   let h=`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
+  <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><label class="lbl" for="mix">Strength or conditioning (WOD)</label>
     <div class="row between small muted" style="margin-bottom:-4px"><span>Strength</span><span>WOD</span></div>
     <input type="range" id="mix" min="0" max="100" step="25" value="${100-mixOf(g)}" aria-valuetext="${esc(mixText(g.dur,mixOf(g)))}">
     <output id="mixOut" class="small">${esc(mixText(g.dur,mixOf(g)))}</output></div>
   <div class="field"><p class="lbl">Where</p><div class="seg">${st.profiles.map(p=>chip(p.name,g.where===p.id,"gen-where",p.id)).join("")}</div></div>
-  <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div></div>
   <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
     ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
