@@ -75,3 +75,24 @@ end $$;
 
 revoke all on function public.bump_ai_usage() from public, anon;
 grant execute on function public.bump_ai_usage() to authenticated;
+
+-- Token use per plan generation (written by the generate-plan Edge Function, shown in Setup).
+create table if not exists public.ai_calls (
+  id bigint generated always as identity primary key,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  model text, effort text, stop_reason text,
+  input_tokens int not null default 0, output_tokens int not null default 0,
+  cache_read_tokens int not null default 0, cache_write_tokens int not null default 0,
+  prompt_chars int
+);
+alter table public.ai_calls enable row level security;
+do $$
+begin
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='ai_calls' and policyname='insert own calls') then
+    create policy "insert own calls" on public.ai_calls for insert to authenticated with check (auth.uid() = user_id);
+  end if;
+  if not exists (select 1 from pg_policies where schemaname='public' and tablename='ai_calls' and policyname='read own calls') then
+    create policy "read own calls" on public.ai_calls for select to authenticated using (auth.uid() = user_id);
+  end if;
+end $$;
