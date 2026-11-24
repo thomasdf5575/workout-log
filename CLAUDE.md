@@ -16,6 +16,7 @@ Personal workout-logging PWA for one user (the repo owner). No build step, no pa
 - `vendor/`: bundled supabase-js. Don't edit.
 - `schema.sql`: database tables, RLS policies, `bump_ai_usage()`. Reference copy only; the owner runs it by hand in the Supabase SQL editor.
 - `index.ts`: Supabase Edge Function `generate-plan` (calls the Anthropic API with a server-side key). Deployed by hand in the Supabase dashboard; not part of the website.
+  It sends `output_config: {effort, format: json_schema}` (`PLAN_SCHEMA` must stay in sync with `normalizePlan()`/`normalizeWod()`), and logs token use to the `ai_calls` table, shown in Setup → AI usage. Keep prompts lean: `buildPrompt()` only includes the sections the chosen mix needs.
 
 ## Rules for every change
 - **Bump `VERSION` in `sw.js`** (`wl-vN` → `wl-vN+1`) whenever any site file changes, or installed phones keep the old version.

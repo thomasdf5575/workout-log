@@ -744,16 +744,21 @@ function buildPrompt(){
     ? `- ${a.name}: the trainee wants EXTRA work today for ${a.spare.join(", ")||"(no muscles listed)"}. Give these muscles 2-4 more hard sets than usual (direct exercises where possible), within the per-session cap.`
     : `- ${a.name} (just done or coming up): keep ${a.spare.join(", ")||"(no muscles listed)"} fresh. No exercise with one of these as a main muscle, and avoid or keep light any compound that works them hard as assisting muscles (e.g. rows and pull-ups load biceps and forearms). Keep overall fatigue moderate.`).join("\n")||"- none";
   const focus=g.focus==="custom"?`Specific muscles only: ${g.muscles.join(", ")} (fill the session with these; other muscles only as needed for balance)`:g.focus==="upper"?"Upper body":g.focus==="lower"?"Lower body":"Full body (cover the muscles furthest below their weekly target)";
-  const names=new Set();(st.baselines||[]).forEach(b=>{if(baselineFor(b.name))names.add(libFor(b.name)?libFor(b.name).name:b.name);});sortedSessions().filter(s=>daysBetween(s.date,todayISO())<=70).forEach(s=>(s.exercises||[]).forEach(e=>names.add(e.name)));
-  const exLines=[...names].slice(0,40).map(n=>{
-    const h=exHistory(n).slice(0,3), hint=hintFor(n), info=libFor(n);
+  const names=new Set();(st.baselines||[]).forEach(b=>{if(baselineFor(b.name))names.add(libFor(b.name)?libFor(b.name).name:b.name);});sortedSessions().filter(s=>daysBetween(s.date,todayISO())<=42).forEach(s=>(s.exercises||[]).forEach(e=>names.add(e.name)));
+  // In a conditioning-only session, only lifts usable in workouts matter (for loads).
+  const exNames=[...names].filter(n=>{const i=libFor(n);return what!=="conditioning"||!i||i.use!=="s";}).slice(0,30);
+  // "80x5x2,80x4@1": identical consecutive sets merged; @n = logged reps in reserve.
+  const setsTxt=sets=>{const out=[];for(const t of sets){const k=(num(t.w)>0?`${fmtKg(num(t.w))}x${t.r}`:`${t.r}`)+(t.rir!=null&&t.rir!==""?`@${num(t.rir)>=3?"3+":num(t.rir)}`:"");const l=out[out.length-1];if(l&&l.k===k)l.n++;else out.push({k,n:1});}
+    return out.map(o=>o.n>1?o.k.replace(/^([^@]+)/,`$1x${o.n}`):o.k).join(",");};
+  const exLines=exNames.map(n=>{
+    const h=exHistory(n).slice(0,2), hint=hintFor(n), info=libFor(n);
     const mus=info?(info.muscles||[info.muscle]).join("+"):"?";
     if(!h.length&&hint) return `- ${n} [${mus}]: not logged yet; self-reported recent set ${hint.lastText.replace(" (starting number)","")} → suggested working weight: ${hint.next.w>0?hint.next.w+" kg ":""}${hint.next.reps}`;
-    const rir=s=>s.rir!=null&&s.rir!==""?`@${num(s.rir)>=3?"3+":num(s.rir)}`:"";
-    return `- ${n} [${mus}]: `+h.map(x=>`${x.date}${x.deload?" (deload)":""}: ${x.sets.map(s=>(num(s.w)>0?`${fmtKg(num(s.w))}x${s.r}`:`${s.r}`)+rir(s)).join(",")}`).join(" | ")+(hint?` → next: ${hint.next.w>0?hint.next.w+" kg ":""}${hint.next.reps}${hint.stalled?" (STALLED)":""}`:"");
+    return `- ${n} [${mus}]: `+h.map(x=>`${x.date.slice(5)}${x.deload?" (deload)":""}: ${setsTxt(x.sets)}`).join(" | ")+(hint?` → next: ${hint.next.w>0?hint.next.w+" kg ":""}${hint.next.reps}${hint.stalled?" (STALLED)":""}`:"");
   }).join("\n")||"- no history or starting numbers yet (pick conservative weights, or null weights so the user chooses)";
-  const recent=sortedSessions().slice(0,8).map(s=>`- ${s.date}${s.deload?" (lighter/deload session)":""}: ${(s.exercises||[]).map(e=>e.name).join(", ")}`).join("\n")||"- none";
-  const avail=availableExercises(prof).filter(x=>x.use!=="c").map(x=>`${x.name} (main ${x.muscles.join("/")}${x.sec.length?"; also "+x.sec.join("/"):""}${x.type==="c"?"; compound":""})`).join("; ");
+  const recent=sortedSessions().slice(0,6).map(s=>`- ${s.date.slice(5)}${s.deload?" (lighter/deload session)":""}: ${(s.exercises||[]).map(e=>e.name).join(", ")}`).join("\n")||"- none";
+  // Compact lists: "Name (main muscles)", * = compound. The model knows the assisting muscles.
+  const avail=availableExercises(prof).filter(x=>x.use!=="c").map(x=>`${x.name} (${x.muscles.join("/")})${x.type==="c"?"*":""}`).join("; ");
   const pk=prioOf(st), [tLo,tHi]=weeklyTarget(st), perWeek=Math.max(1,Math.min(7,Math.round(num(st.perWeek))||3));
   const done7=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   const blk=trainingBlock();
@@ -772,7 +777,7 @@ The trainee chose 100% conditioning: "exercises" MUST be an empty list. No stren
 {"kind":"hybrid","title":"short name","summary":"1-2 sentences: why this session today","deload":false,"estMinutes":60,"warmup":"one line","exercises":[${exJson}],"wod":${wodJson},"cooldown":"one line"}`;
   const wodFormats=`"wod.format" is one of: "fortime" (do "rounds" rounds of the movement list as fast as possible, "minutes" = time cap, about 1.5x the expected time), "amrap" (as many rounds as possible in "minutes"), "emom" (every minute on the minute for "minutes" minutes; minute 1 does movement 1, minute 2 movement 2, and so on, cycling; each minute's work should take 30-45 s), "intervals" ("rounds" rounds of "workSec" work and "restSec" rest; interval 1 does movement 1, interval 2 movement 2, cycling), "chipper" (the list once, top to bottom, for time; "minutes" = cap). "unit" is one of: reps, cal, m, s. Every movement needs "scaled": a lighter load, fewer reps or the easier version that keeps the same time and stimulus.`;
   const sexTxt=st.sex==="male"?"male":st.sex==="female"?"female":"not given";
-  const condMoves=availableExercises(prof).filter(x=>x.use!=="s").map(x=>`${x.name} (main ${x.muscles.join("/")}; ${x.unit}; ${x.pattern}; ${x.skill}${x.easier?"; easier: "+x.easier:""})`).join("; ");
+  const condMoves=availableExercises(prof).filter(x=>x.use!=="s").map(x=>`${x.name} (${x.muscles.join("/")}; ${x.pattern}${x.unit!=="reps"?"; "+x.unit:""}${x.skill!=="basic"?"; "+x.skill:""}${x.easier?"; easier: "+x.easier:""})`).join("; ");
   const recentWod=sortedSessions().filter(s=>s.wod&&daysBetween(s.date,todayISO())<=10).slice(0,6).map(s=>`- ${s.date}: ${wodTitle(s.wod)}: ${(s.wod.movements||[]).map(m=>m.name).join(", ")}${s.score?` (score ${scoreText(s)})`:""}`).join("\n")||"- none";
   return `${head}
 "muscles" lists the 1-3 MAIN muscles: prime movers that are substantially loaded and limit the set. "secondary" lists other muscles meaningfully worked. All must be from: ${MUSCLES.join(", ")}. "rir" is the target reps in reserve for the working sets (0-4). "deload" is true only for a deliberately lighter session (see DELOADS). "weight" is kg: PER DUMBBELL/KETTLEBELL (one hand) for two-handed dumbbell or kettlebell lifts, the single implement for goblet squats and swings, the total bar load for barbells, the stack setting for machines and cables; or null for bodyweight or when unknown. For timed holds use reps like "40s".${what!=="strength"?"\n"+wodFormats:""}
@@ -798,8 +803,9 @@ TRAINEE
 - Goals in their words: ${st.goals.trim()||"none beyond the priority"}
 - Limitations / exercises to avoid: ${st.limits.trim()||"none stated"}
 
-${what==="conditioning"?"STRENGTH CONTEXT (no strength part today; use this only to understand the trainee's week)":"RULES (based on current resistance-training evidence)"}
-- Equipment: use only exercises possible with the equipment above. Prefer these names exactly: ${avail}. Other standard exercises are fine only if they need just the listed equipment.
+${what==="conditioning"?`WEEKLY CONTEXT
+- Volume: the weekly gap per muscle is the target minus the sets in the last 7 days; avoid hard training of a muscle trained heavily in the last 48h.
+`:`- Equipment: use only exercises possible with the equipment above. Prefer these names exactly (main muscles, * = compound): ${avail}. Other standard exercises are fine only if they need just the listed equipment.
 - Volume: for each muscle, the weekly gap is the target minus the sets in the last 7 days. Spread that gap over the remaining sessions of the week (about ${perWeek} per week), so each muscle is trained roughly twice a week. Put no more than ~8 hard sets for one muscle in a single session; beyond that, extra sets in the same session add little. Do not push muscles far above the top of the target.
 - Effort: count only working sets; warm-up sets don't count. Give every exercise a target "rir" matching the priority. Avoid sets to failure on heavy free-weight compounds (squat, deadlift, barbell rows, overhead and bench press); failure is optional on the last set of isolation or machine work.
 - Progressive overload: for exercises with history, use the "next" target given (double progression). Never jump more than one increment. Logged effort is shown as @RIR (reps in reserve, 3+ = 3 or more): if sets were logged at 3+ RIR, the weight was too light; if at 0 RIR and below the rep range, hold or reduce the weight.
@@ -808,14 +814,14 @@ ${what==="conditioning"?"STRENGTH CONTEXT (no strength part today; use this only
 - Weights for exercises with no history or starting number: estimate conservatively from related lifts below (e.g. dumbbell press from bench press, Romanian deadlift from deadlift), erring light; use null if there is no sensible basis.
 - Balance: unless the focus says otherwise, prioritise muscles furthest below target and with the longest gap since trained; avoid hard training of a muscle trained heavily in the last 48h.
 - Order: big compound lifts first while fresh, isolation and core last.
-
+`}
 DELOADS (lighter sessions only when needed)
 - Consecutive weeks of training since the last lighter session or break: ${blk.weeks}. Last deload: ${blk.lastDeload||"none logged"}. STALLED lifts: ${stalled.join(", ")||"none"}.
 - Make today a deload ("deload": true) if 2 or more main lifts are STALLED, or energy is "tired" after 4+ consecutive weeks, or the trainee asks for it. Deload = same exercises, about half the sets, same or ~10% lighter weights, RIR 4+, nothing close to failure. Say why in the summary.
 - If none of those apply but it has been 7+ consecutive weeks, train normally and suggest a lighter session soon in the summary.${what!=="strength"?" A deload day's conditioning is short and easy: moderate pace, light loads.":""}
 ${what==="strength"?"":`
 CONDITIONING RULES
-- Use only these movements (names exactly), possible with the equipment above: ${condMoves}. Running needs "Can run outside".
+- Use only these movements (names exactly; main muscles; pattern; unit if not reps; skill if not basic): ${condMoves}. Running needs "Can run outside".
 - Vary the stimulus: pick a format and duration different from RECENT CONDITIONING; mostly short (under 8 min) and medium (8-15 min), long (16-25 min) at most once a week. Today's workout should take about ${Math.min(30,cMin)} min (the trainee's chosen split).
 - 2-3 movements for short and medium workouts, up to 5-6 for a chipper. Mix a cardio piece (machine or run), a bodyweight movement and a weighted movement where possible.
 - Patterns: don't load the same pattern hard as ${what==="hybrid"?"today's main strength lift or ":""}the last 48h of training. Never pair two grip-limited movements (pull-ups, toes-to-bar, rope climbs, heavy deadlifts, kettlebell swings, carries) or two lower-back-heavy hinges (deadlifts, cleans, snatches, swings) in one workout.
@@ -828,7 +834,7 @@ SETS PER MUSCLE, LAST 7 DAYS: ${MUSCLES.map(m=>`${m} ${vol[m]}`).join(", ")}
 DAYS SINCE LAST TRAINED: ${MUSCLES.map(m=>`${m} ${since[m]??"never/unknown"}`).join(", ")}
 RECENT SESSIONS:
 ${recent}
-EXERCISE HISTORY AND STARTING NUMBERS (newest first; weight x reps, @n = logged reps in reserve):
+EXERCISE HISTORY AND STARTING NUMBERS (newest first, dates MM-DD; weight x reps, "80x5x2" = two sets of 80x5, @n = logged reps in reserve):
 ${exLines}${what==="strength"?"":`
 RECENT CONDITIONING (last 10 days):
 ${recentWod}`}`;
@@ -904,6 +910,8 @@ async function generate(tweak){
       : c==="not_signed_in"?"Your sign-in has expired. Sign out and back in, then try again."
       : c==="server_not_configured"?"The plan generator isn't set up yet: the Anthropic API key is missing in Supabase (see SETUP.md, step 4)."
       : c==="ai_failed"||c==="server_error"||c==="usage_check_failed"?"The plan generator had a problem. Wait a moment, then tap Generate again."
+      : c==="ai_truncated"?"The plan was too long and got cut off. Try a shorter session or fewer instructions, then tap Generate again."
+      : c==="ai_refused"?"The AI declined this request. Rephrase anything unusual in your notes and try again."
       : "The plan came back in a form I couldn't read. Tap Generate to try again.";
     if(e&&e.detail) S.genError+=` (Details: ${e.detail})`;
   }finally{if(my===genToken){S.genBusy=false;render();}}
@@ -1310,6 +1318,27 @@ function viewLibrary(){
     : `<button class="btn ghost danger" data-a="lib-reset" style="align-self:flex-start">Restore the default list</button>`;
   return h+`</section>`;
 }
+// Token use of the plan generator over the last 30 days (table ai_calls, written by the Edge Function).
+const PRICES={"claude-sonnet-5-5":[2,10],"claude-sonnet-5":[2,10],"claude-haiku-5-5":[0.1,0.5],"claude-opus-5-5":[4,20]}; // $ per million tokens: input, output
+async function loadAiUsage(){
+  if(!sb||!user||!navigator.onLine||S.aiUsageBusy) return; S.aiUsageBusy=true;
+  try{
+    const since=new Date(Date.now()-30*864e5).toISOString();
+    const {data,error}=await sb.from("ai_calls").select("model,input_tokens,output_tokens,cache_read_tokens").gte("created_at",since).limit(1000);
+    if(error) throw error;
+    const n=data.length, sum=k=>data.reduce((a,r)=>a+(r[k]||0),0);
+    const cost=data.reduce((a,r)=>{const [pi,po]=PRICES[r.model]||PRICES["claude-sonnet-5-5"];return a+(r.input_tokens*pi+r.output_tokens*po+(r.cache_read_tokens||0)*pi*0.05)/1e6;},0);
+    S.aiUsage={n,inAvg:n?Math.round(sum("input_tokens")/n):0,outAvg:n?Math.round(sum("output_tokens")/n):0,cost};
+  }catch(e){S.aiUsage={error:true};}
+  finally{S.aiUsageBusy=false;S.aiUsageAt=Date.now();if(S.tab==="setup"&&!S.setupPage)render();}
+}
+function viewAiUsage(){
+  if(!S.aiUsage||Date.now()-(S.aiUsageAt||0)>60000) setTimeout(loadAiUsage,0);
+  const u=S.aiUsage;
+  const body=!u?"Loading…":u.error?"Not available yet: run the latest schema.sql in Supabase and update the plan generator.":!u.n?"No plans logged in the last 30 days.":
+    `${u.n} plan${u.n===1?"":"s"} · on average ${u.inAvg.toLocaleString()} tokens in, ${u.outAvg.toLocaleString()} out (incl. thinking) · about $${u.cost.toFixed(u.cost<1?3:2)} in total`;
+  return `<section class="card"><h2>AI usage</h2><p class="muted small" style="margin:0">Last 30 days, estimated from API list prices.</p><p class="small" style="margin:0">${esc(body)}</p></section>`;
+}
 function viewSetup(){
   const st=S.settings;
   let h=`<div class="row between" style="position:sticky;top:0;z-index:2;background:var(--bg);padding:4px 0"><span class="muted small" id="saveState" role="status">Changes save automatically</span><button class="btn primary" data-a="settings-save">Save</button></div>`;
@@ -1337,6 +1366,7 @@ function viewSetup(){
   <div class="field"><p class="lbl">Exercise style</p><div class="seg">${Object.entries(STYLES).map(([k,l])=>chip(l,st.style===k,"style",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${st.style==="compound"?"Sessions are built around multi-joint lifts; isolation work only fills gaps.":st.style==="balanced"?"Main lifts first, then an even mix of compound and isolation work.":"One or two main lifts, then mostly isolation work."}</p></div>
   <div class="field"><label class="lbl" for="goals">Goals</label><textarea id="goals" data-in="goals" placeholder="e.g. Stronger legs and back for badminton, stay injury-free, some muscle">${esc(st.goals)}</textarea></div>
   <div class="field"><label class="lbl" for="limits">Limitations and exercises to avoid</label><textarea id="limits" data-in="limits" placeholder="e.g. No behind-the-neck presses. Go easy on deep knee flexion.">${esc(st.limits)}</textarea></div></section>`;
+  h+=viewAiUsage();
   h+=`<section class="card"><h2>Your account</h2><p class="muted small" style="margin:0">Signed in as <b>${esc(user&&user.email||"")}</b>. Your log is saved to this account and synced across your devices.</p>
   ${S.confirm==="signout"?`<div class="inline-confirm"><span class="small">Some changes haven't synced yet and will be lost if you sign out now.</span><button class="btn danger" data-a="signout">Sign out anyway</button><button class="btn" data-a="confirm-no">Stay signed in</button></div>`:`<button class="btn" data-a="signout">Sign out</button>`}</section>
   <section class="card"><h2>Backup and import</h2><p class="muted small" style="margin:0">Copy a backup any time. To bring over your history from the claude.ai version, copy its backup there (Setup → Copy backup) and paste it below.</p>
