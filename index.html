@@ -217,7 +217,7 @@ function rebuildLib(){
   LIB=[...DEFAULT_LIB.filter(x=>!hidden.has(norm(x.name))&&!cn.has(norm(x.name))),...custom];
 }
 const RANGES = {c:[6,10],i:[10,15],b:[8,20],t:[30,60]};
-const FOCUS = {auto:"Auto (balance the week)",full:"Full body",upper:"Upper body",lower:"Lower body"};
+const FOCUS = {full:"Full",upper:"Upper",lower:"Lower",custom:"Specific"};
 const STYLES = {compound:"Mostly compound",balanced:"Balanced",isolation:"More isolation"};
 const STYLE_RULE = {
   compound:"The trainee prefers compound lifts. Build the session around multi-joint exercises (roughly 70-80% of working sets). Add isolation work only to cover a muscle the compounds miss, a lagging muscle, or when a compound would load a muscle that must be spared today.",
@@ -226,12 +226,30 @@ const STYLE_RULE = {
 };
 // Training priority. sets = weekly working-set target per muscle (fractional count, see weekVolume).
 const PRIORITIES = {
-  both:{label:"Muscle + strength",sets:[8,16],about:"Heavy main lifts (4–8 reps), then 8–15 rep accessory work. About 8–16 sets per muscle per week."},
-  hypertrophy:{label:"Muscle size",sets:[10,20],about:"Mostly 6–15 reps close to failure. About 10–20 sets per muscle per week."},
-  strength:{label:"Strength",sets:[6,12],about:"Main lifts at 1–6 reps, never to failure, long rests. About 6–12 sets per muscle per week."},
-  health:{label:"General health",sets:[4,10],about:"Every muscle group twice a week, 8–15 reps, joint-friendly. About 4–10 sets per muscle per week."}
+  both:{label:"Muscle + strength",sets:[8,16],about:"Heavy main lifts (4–8 reps), then 8–15 rep accessory work."},
+  hypertrophy:{label:"Muscle size",sets:[10,20],about:"Mostly 6–15 reps close to failure."},
+  strength:{label:"Strength",sets:[6,12],about:"Main lifts at 1–6 reps, never to failure, long rests."},
+  health:{label:"General health",sets:[4,10],about:"Every muscle group twice a week, 8–15 reps, joint-friendly."}
 };
 const prioOf=st=>PRIORITIES[st&&st.priority]?st.priority:"both";
+// Training experience. Beginners grow on less volume and progress faster; advanced lifters need
+// more volume, smaller jumps on heavy lower-body lifts and more variation to keep progressing.
+const EXPERIENCE = {
+  beginner:{label:"Beginner",about:"Lower weekly volume, add weight as soon as sets reach the middle of the rep range, stable exercises, 2–3 reps left on every set.",
+    rule:"BEGINNER (under ~1 year of consistent training). Use the lower weekly volume target given. Keep the same 4-6 exercises session to session so technique and loads can progress; prefer machines, dumbbells and stable variations over complex barbell lifts unless the trainee already uses them. Every set at 2-3 RIR (beginners misjudge effort near failure). Progress load every session while reps allow."},
+  intermediate:{label:"Intermediate",about:"Standard volume and double progression (add weight once every set reaches the top of the rep range).",
+    rule:"INTERMEDIATE (~1-3 years). Standard volume. Double progression on main lifts; keep main exercises stable for 4-8 weeks, rotate accessories when they stall."},
+  advanced:{label:"Advanced",about:"Higher weekly volume, smaller jumps on heavy leg lifts, more variation in reps and load across the week, sets closer to failure where safe.",
+    rule:"ADVANCED (3+ years, near genetic potential). Use the higher weekly volume target given. Vary rep ranges and load across the week (e.g. a heavier 4-6 rep day and a lighter 10-15 rep day for the same muscle). Isolation and machine work at 0-1 RIR; free-weight compounds at 1-2 RIR. Expect slower progress: small load jumps, and use rep or set increases before load."}
+};
+const expOf=st=>EXPERIENCE[st&&st.experience]?st.experience:"intermediate";
+// Weekly working-set target per muscle, from priority and experience.
+function weeklyTarget(st){
+  const [lo,hi]=PRIORITIES[prioOf(st)].sets, ex=expOf(st);
+  if(ex==="beginner") return [Math.max(3,Math.round(lo*0.75)),Math.max(5,Math.round(hi*0.65))];
+  if(ex==="advanced") return [Math.round((lo+hi)/2),Math.round(hi*1.1)];
+  return [lo,hi];
+}
 const PRIORITY_RULE = {
   both:"Muscle AND strength. Start with 1-2 main compound lifts at 4-8 reps (~75-85% 1RM), 1-3 reps in reserve (RIR), 2-3 min rest. Then accessories at 8-15 reps, 0-2 RIR (1-3 RIR on free-weight compounds), 1.5-2 min rest.",
   hypertrophy:"Muscle size. Most sets 6-15 reps (compounds 6-10, isolation 10-20); stay within 5-30 reps. Take sets close to failure: 0-2 RIR on isolation and machine work, 1-3 RIR on free-weight compounds. Rest at least 2 min on compounds, 1-2 min on isolation.",
@@ -278,7 +296,7 @@ function rangeOf(info){return RANGES[(info&&info.type)||"c"];}
 function incOf(info){
   if(!info) return 2.5;
   const lower=(info.muscles||[info.muscle]).some(m=>["quads","hamstrings","glutes"].includes(m));
-  if(info.eq.includes("barbell")) return lower?5:2.5;
+  if(info.eq.includes("barbell")) return lower&&expOf(S.settings)!=="advanced"?5:2.5;
   if(info.eq.includes("dumbbell")) return 2;
   if(info.eq.includes("kettlebell")) return 4;
   return 2.5;
@@ -306,7 +324,7 @@ function defaultSettings(){return {
   experience:"intermediate", style:"compound", priority:"both", perWeek:3, goals:"", limits:"",
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
   exLib:{custom:[],hidden:[]},
-  lastGen:{where:"gym",dur:60,energy:"normal",focus:"auto",muscles:[]}
+  lastGen:{where:"gym",dur:60,energy:"normal",focus:"full",muscles:[]}
 };}
 const S = {
   tab:"plan", mode:"loading", stale:false, syncText:"", authMode:"signin", authMsg:"", authBusy:false, recovery:false,
@@ -322,7 +340,7 @@ const sortedSessions=()=>[...S.sessions].sort((a,b)=>(b.date||"").localeCompare(
    offline, changes wait in a queue and are sent when the connection returns. */
 const ls={get(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},del(k){try{localStorage.removeItem(k);}catch(e){}}};
 const clone=x=>x==null?x:JSON.parse(JSON.stringify(x));
-function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(lg.focus!=="custom"&&!FOCUS[lg.focus])lg.focus="auto";return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles,activities:Array.isArray(x.activities)?x.activities:d.activities};}
+function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(!FOCUS[lg.focus])lg.focus="full";return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles,activities:Array.isArray(x.activities)?x.activities:d.activities};}
 const CFG=window.WORKOUT_CONFIG||{};
 let sb=null, user=null;
 const k=name=>`wl.${name}.${user?user.id:"anon"}`;
@@ -546,6 +564,8 @@ function hintFor(name){
     else{next={w:0,reps:`${minR+1}${unit}+`};why="Add a rep per set";}
   }else if(atTop.every(s=>s.r>=hi)){
     next={w:Math.round((topW+incOf(info))*100)/100,reps:`${lo}–${hi}`};why=`All sets hit ${hi}: go up one step`;
+  }else if(expOf(S.settings)==="beginner"&&atTop.every(s=>s.r>=Math.ceil((lo+hi)/2))&&!atTop.some(s=>s.rir!=null&&s.rir!==""&&num(s.rir)===0)){
+    const mid=Math.ceil((lo+hi)/2);next={w:Math.round((topW+incOf(info))*100)/100,reps:`${lo}–${hi}`};why=`All sets reached ${mid}: as a beginner, go up one step`;
   }else if(atTop.every(s=>s.r>=lo&&s.rir!=null&&s.rir!==""&&num(s.rir)>=3)){
     next={w:Math.round((topW+incOf(info))*100)/100,reps:`${lo}–${hi}`};why="Every set felt easy (3+ reps left): go up one step";
   }else if(atTop.some(s=>s.r<lo)){
@@ -589,10 +609,10 @@ function buildPrompt(){
   const g=S.gen, st=S.settings, prof=profileByid(g.where);
   const vol=weekVolume(), since=daysSince();
   const acts=st.activities.map(a=>({a,v:(g.acts||{})[a.id]})).filter(x=>x.v);
-  const actLines=acts.map(({a,v})=>v==="before"
-    ? `- ${a.name} is coming up within ~24h: keep ${a.spare.join(", ")||"(nothing listed)"} fresh. No exercise with one of these as main muscle, and avoid or keep light any compound that works them hard as assisting muscles (e.g. rows and pull-ups load biceps and forearms). Keep overall fatigue moderate.`
-    : `- Just did ${a.name}: ${a.spare.join(", ")||"those muscles"} may be fatigued; reduce load/volume on them.`).join("\n")||"- none";
-  const focus=g.focus==="custom"?`Specific muscles: ${g.muscles.join(", ")}`:FOCUS[g.focus];
+  const actLines=acts.map(({a,v})=>v==="more"
+    ? `- ${a.name}: the trainee wants EXTRA work today for ${a.spare.join(", ")||"(no muscles listed)"}. Give these muscles 2-4 more hard sets than usual (direct exercises where possible), within the per-session cap.`
+    : `- ${a.name} (just done or coming up): keep ${a.spare.join(", ")||"(no muscles listed)"} fresh. No exercise with one of these as a main muscle, and avoid or keep light any compound that works them hard as assisting muscles (e.g. rows and pull-ups load biceps and forearms). Keep overall fatigue moderate.`).join("\n")||"- none";
+  const focus=g.focus==="custom"?`Specific muscles only: ${g.muscles.join(", ")} (fill the session with these; other muscles only as needed for balance)`:g.focus==="upper"?"Upper body":g.focus==="lower"?"Lower body":"Full body (cover the muscles furthest below their weekly target)";
   const names=new Set();(st.baselines||[]).forEach(b=>{if(baselineFor(b.name))names.add(libFor(b.name)?libFor(b.name).name:b.name);});sortedSessions().filter(s=>daysBetween(s.date,todayISO())<=70).forEach(s=>(s.exercises||[]).forEach(e=>names.add(e.name)));
   const exLines=[...names].slice(0,40).map(n=>{
     const h=exHistory(n).slice(0,3), hint=hintFor(n), info=libFor(n);
@@ -603,7 +623,7 @@ function buildPrompt(){
   }).join("\n")||"- no history or starting numbers yet (pick conservative weights, or null weights so the user chooses)";
   const recent=sortedSessions().slice(0,8).map(s=>`- ${s.date}${s.deload?" (lighter/deload session)":""}: ${(s.exercises||[]).map(e=>e.name).join(", ")}`).join("\n")||"- none";
   const avail=availableExercises(prof).map(x=>`${x.name} (main ${x.muscles.join("/")}${x.sec.length?"; also "+x.sec.join("/"):""}${x.type==="c"?"; compound":""})`).join("; ");
-  const pk=prioOf(st), [tLo,tHi]=PRIORITIES[pk].sets, perWeek=Math.max(1,Math.min(7,Math.round(num(st.perWeek))||3));
+  const pk=prioOf(st), [tLo,tHi]=weeklyTarget(st), perWeek=Math.max(1,Math.min(7,Math.round(num(st.perWeek))||3));
   const done7=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   const blk=trainingBlock();
   const stalled=[...names].filter(n=>{const h=hintFor(n);return h&&h.stalled;});
@@ -625,7 +645,7 @@ TRAINEE
 - Priority: ${PRIORITY_RULE[pk]}
 - Weekly volume target: ${tLo}-${tHi} working sets per muscle per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle).
 - Planned strength sessions per week: ${perWeek}. Sessions in the last 7 days: ${done7}.
-- Experience: ${st.experience}
+- Experience: ${EXPERIENCE[expOf(st)].rule}
 - Exercise style: ${STYLE_RULE[st.style]||STYLE_RULE.compound}
 - Goals in their words: ${st.goals.trim()||"none beyond the priority"}
 - Limitations / exercises to avoid: ${st.limits.trim()||"none stated"}
@@ -791,9 +811,9 @@ function viewWelcome(){
   const st=S.settings, pk=prioOf(st);
   let h=`<section class="card"><h2>Welcome</h2><p style="margin:0">A few questions so your first plans fit you. Everything can be changed later in Setup.</p></section>
   <section class="card"><h2>Your training</h2>
-  <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)}</p></div>
+  <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)} About ${weeklyTarget(st).join("–")} sets per muscle per week at your experience level.</p></div>
   <div class="field"><p class="lbl">Strength sessions per week</p><div class="seg">${[1,2,3,4,5,6].map(n=>chip(String(n),(Math.round(num(st.perWeek))||3)===n,"per-week",n)).join("")}</div></div>
-  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${["beginner","intermediate","advanced"].map(x=>`<option value="${x}" ${st.experience===x?"selected":""}>${cap(x)}</option>`).join("")}</select></div></section>`;
+  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${Object.entries(EXPERIENCE).map(([x,e])=>`<option value="${x}" ${expOf(st)===x?"selected":""}>${e.label}</option>`).join("")}</select><p class="muted small" style="margin:6px 0 0">${esc(EXPERIENCE[expOf(st)].about)}</p></div></section>`;
   h+=`<section class="card"><h2>Recent lifts <span class="muted small">(optional)</span></h2><p class="muted small" style="margin:0">For any lift you already do, enter a recent set you managed with good form, e.g. 80 kg × 5. Until you log the lift, the app starts you a little below it. Leave kg empty for bodyweight moves. For dumbbells, enter the weight of one dumbbell.</p>
   <datalist id="libnames">${LIB.map(x=>`<option value="${esc(x.name)}"></option>`).join("")}</datalist>
   ${(st.baselines||[]).map((b,i)=>`<div class="prof" style="gap:6px"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="bn-${i}">Lift</label><input type="text" id="bn-${i}" list="libnames" data-in="bl" data-f="name" data-i="${i}" value="${esc(b.name)}" placeholder="Lift" style="flex:1;min-width:0"><button class="btn ghost danger xbtn" data-a="bl-del" data-i="${i}" aria-label="Remove ${esc(b.name)}">✕</button></div>
@@ -808,11 +828,10 @@ function viewPlan(){
   <div class="field"><p class="lbl">Where</p><div class="seg">${st.profiles.map(p=>chip(p.name,g.where===p.id,"gen-where",p.id)).join("")}</div></div>
   <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div></div>
-  <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(k==="auto"?"Auto":l,g.focus===k,"gen-focus",k)).join("")}</div>
-    ${(S.moreFocus||g.focus==="custom")?`<div class="seg" style="margin-top:8px">${MUSCLES.map(mu=>chip(cap(mu),g.focus==="custom"&&g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}
-    <button class="btn ghost small" style="align-self:flex-start;min-height:36px;padding:6px 4px" data-a="more-focus" aria-expanded="${(S.moreFocus||g.focus==="custom")?"true":"false"}">${(S.moreFocus||g.focus==="custom")?"Fewer options ▴":"More: pick specific muscles ▾"}</button></div>`;
+  <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
+    ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
   if(st.activities.length){
-    h+=`<div class="field"><p class="lbl">Other activities</p>${st.activities.map(a=>{const v=(g.acts||{})[a.id]||"";return `<div class="actrow"><span>${esc(a.name)}</span><div class="seg">${chip("—",!v,"gen-act",a.id+"|")}${chip("Coming up",v==="before","gen-act",a.id+"|before","sm")}${chip("Just did",v==="after","gen-act",a.id+"|after","sm")}</div></div>`;}).join("")}</div>`;
+    h+=`<div class="field"><p class="lbl">Other activities</p><p class="muted small" style="margin:0">− trains that activity's muscles lightly or not at all today; + gives them extra work. Tap again to turn off.</p>${st.activities.map(a=>{const v=(g.acts||{})[a.id]||"";const vv=v==="more"?"more":v?"less":"";return `<div class="actrow"><span>${esc(a.name)}<br><span class="muted small">${esc(a.spare.join(", ")||"no muscles set")}</span></span><div class="seg">${chip("−",vv==="less","gen-act",a.id+"|less","sm")}${chip("+",vv==="more","gen-act",a.id+"|more","sm")}</div></div>`;}).join("")}</div>`;
   }
   h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Only one workout this week, so I can go longer. Left knee a bit sore.">${esc(g.note)}</textarea></div>`;
   h+= S.genBusy
@@ -839,12 +858,12 @@ function viewPlanCard(p){
   return h;
 }
 function viewWeek(){
-  const v=weekVolume(),since=daysSince();const [tLo,tHi]=PRIORITIES[prioOf(S.settings)].sets;const max=Math.max(tHi,...Object.values(v));
+  const v=weekVolume(),since=daysSince();const [tLo,tHi]=weeklyTarget(S.settings);const max=Math.max(tHi,...Object.values(v));
   const n=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   if(!S.sessions.length) return `<section class="card"><h2>Your week</h2><p class="muted" style="margin:0">After your first logged session, this shows the sets per muscle over the last 7 days. The generator uses it to fill the gaps.</p></section>`;
   return `<section class="card"><div class="row between"><h2>Last 7 days</h2><span class="muted small">${n} session${n===1?"":"s"}</span></div>
   <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} sets"><div class="f ${v[m]<tLo?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small muted">${since[m]===undefined?"(never)":since[m]===0?"(today)":`(${since[m]}d)`}</span></span>`).join("")}</div>
-  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}); amber means below ${tLo}. Brackets show days since each muscle was last trained.</p></section>`;
+  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}, ${esc(expOf(S.settings))}); amber means below ${tLo}. Brackets show days since each muscle was last trained.</p></section>`;
 }
 
 function viewLog(){
@@ -969,12 +988,18 @@ function viewLibrary(){
   }
   h+=`<button class="btn" data-a="lib-add" style="align-self:flex-start">Add an exercise</button>`;
   const dn=new Set(DEFAULT_LIB.map(x=>norm(x.name)));
-  const groups=MUSCLES.map(m=>[m,LIB.filter(x=>x.muscles[0]===m).sort((a,b)=>a.name.localeCompare(b.name))]).filter(g=>g[1].length);
-  h+=groups.map(([m,list])=>`<details class="sess" data-lgrp="${m}" ${S.libOpen&&S.libOpen.has(m)?"open":""}><summary><span><b>${cap(m)}</b></span><span class="muted small">${list.length}</span></summary>
-    ${list.map(x=>{const key=norm(x.name);return `<div class="prof" style="gap:4px"><div class="row between" style="flex-wrap:nowrap"><span><b>${esc(x.name)}</b>${x.custom?` <span class="muted small">(${dn.has(key)?"edited":"added"})</span>`:""}<br><span class="muted small">${esc(x.muscles.join(", "))}${x.sec.length?` · also ${esc(x.sec.join(", "))}`:""} · ${esc(x.eq.length?x.eq.map(k=>EQUIP[k]).join(", "):"bodyweight")} · ${esc(TYPES[x.type]||"")}</span></span>
-      <span class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn ghost" data-a="lib-edit" data-v="${esc(x.name)}" aria-label="Edit ${esc(x.name)}">Edit</button><button class="btn ghost danger" data-a="lib-del" data-v="${esc(x.name)}" aria-label="Remove ${esc(x.name)}">✕</button></span></div>
-      ${S.confirm==="libdel-"+key?`<div class="inline-confirm"><span class="small">Remove ${esc(x.name)} from your list? Past sessions keep it.</span><button class="btn danger" data-a="lib-del-yes" data-v="${esc(x.name)}">Remove</button><button class="btn" data-a="confirm-no">Keep</button></div>`:""}</div>`;}).join("")}
-  </details>`).join("");
+  // Body-part filter (any main muscle) + exercise dropdown, then the selected exercise's details.
+  const list=LIB.filter(x=>!S.libFilter||x.muscles.includes(S.libFilter)).sort((a,b)=>a.name.localeCompare(b.name));
+  if(!list.some(x=>x.name===S.libSel)) S.libSel=list[0]?list[0].name:"";
+  h+=`<div class="row" style="flex-wrap:nowrap;align-items:flex-end"><div class="field" style="flex:0 0 40%"><label class="lbl" for="libFilter">Body part</label><select id="libFilter" data-in="lib-filter"><option value="">All (${LIB.length})</option>${MUSCLES.map(m=>{const n=LIB.filter(x=>x.muscles.includes(m)).length;return n?`<option value="${m}" ${S.libFilter===m?"selected":""}>${cap(m)} (${n})</option>`:"";}).join("")}</select></div>
+    <div class="field" style="flex:1;min-width:0"><label class="lbl" for="libSel">Exercise</label><select id="libSel" data-in="lib-sel">${list.map(x=>`<option value="${esc(x.name)}" ${x.name===S.libSel?"selected":""}>${esc(x.name)}</option>`).join("")}</select></div></div>`;
+  const x=list.find(e=>e.name===S.libSel);
+  if(x){const key=norm(x.name);
+    h+=`<div class="prof" style="gap:6px"><div><b>${esc(x.name)}</b>${x.custom?` <span class="muted small">(${dn.has(key)?"edited":"added"})</span>`:""}</div>
+      <div class="small"><span class="muted">Main:</span> ${mainTags(x.muscles)}${x.sec.length?`<br><span class="muted">Also works:</span> ${esc(x.sec.join(", "))}`:""}<br><span class="muted">Equipment:</span> ${esc(x.eq.length?x.eq.map(k=>EQUIP[k]).join(", "):"bodyweight")}<br><span class="muted">Type:</span> ${esc(TYPES[x.type]||"")}</div>
+      ${S.confirm==="libdel-"+key?`<div class="inline-confirm"><span class="small">Remove ${esc(x.name)} from your list? Past sessions keep it.</span><button class="btn danger" data-a="lib-del-yes" data-v="${esc(x.name)}">Remove</button><button class="btn" data-a="confirm-no">Keep</button></div>`
+        :`<div class="row"><button class="btn" data-a="lib-edit" data-v="${esc(x.name)}">Edit</button><button class="btn ghost danger" data-a="lib-del" data-v="${esc(x.name)}">Remove</button></div>`}</div>`;
+  }
   if((ex.custom||[]).length||(ex.hidden||[]).length) h+= S.confirm==="libreset"
     ? `<div class="inline-confirm"><span class="small">Go back to the default list? Your added and edited exercises will be removed.</span><button class="btn danger" data-a="lib-reset-yes">Restore defaults</button><button class="btn" data-a="confirm-no">Keep</button></div>`
     : `<button class="btn ghost danger" data-a="lib-reset" style="align-self:flex-start">Restore the default list</button>`;
@@ -988,15 +1013,15 @@ function viewSetup(){
     <div class="seg">${Object.entries(EQUIP).map(([k,l])=>chip(l,p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div></div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
   h+=viewLibrary();
-  h+=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles to keep fresh for each one. On the Plan tab, mark an activity as "Coming up" and the generator won't train those muscles.</p>
+  h+=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles each activity uses. On the Plan tab, tap − to train them lightly or not at all that day, or + to give them extra work.</p>
   ${st.activities.map((a,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="an-${i}">Activity name</label><input type="text" id="an-${i}" data-in="act-name" data-i="${i}" value="${esc(a.name)}"><button class="btn ghost danger xbtn" data-a="act-del" data-i="${i}" aria-label="Delete ${esc(a.name)}">✕</button></div>
     <div class="seg">${MUSCLES.map(m=>chip(cap(m),a.spare.includes(m),"act-m",i+"|"+m,"sm")).join("")}</div></div>`).join("")}
   <button class="btn" data-a="act-add">Add an activity</button></section>`;
   const pk=prioOf(st);
   h+=`<section class="card"><h2>About you</h2>
-  <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)}</p></div>
+  <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)} About ${weeklyTarget(st).join("–")} sets per muscle per week at your experience level.</p></div>
   <div class="field"><p class="lbl">Strength sessions per week</p><div class="seg">${[1,2,3,4,5,6].map(n=>chip(String(n),(Math.round(num(st.perWeek))||3)===n,"per-week",n)).join("")}</div><p class="muted small" style="margin:6px 0 0">The generator spreads each muscle's weekly sets over this many sessions.</p></div>
-  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${["beginner","intermediate","advanced"].map(x=>`<option value="${x}" ${st.experience===x?"selected":""}>${cap(x)}</option>`).join("")}</select></div>
+  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${Object.entries(EXPERIENCE).map(([x,e])=>`<option value="${x}" ${expOf(st)===x?"selected":""}>${e.label}</option>`).join("")}</select><p class="muted small" style="margin:6px 0 0">${esc(EXPERIENCE[expOf(st)].about)}</p></div>
   <div class="field"><p class="lbl">Exercise style</p><div class="seg">${Object.entries(STYLES).map(([k,l])=>chip(l,st.style===k,"style",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${st.style==="compound"?"Sessions are built around multi-joint lifts; isolation work only fills gaps.":st.style==="balanced"?"Main lifts first, then an even mix of compound and isolation work.":"One or two main lifts, then mostly isolation work."}</p></div>
   <div class="field"><label class="lbl" for="goals">Goals</label><textarea id="goals" data-in="goals" placeholder="e.g. Stronger legs and back for badminton, stay injury-free, some muscle">${esc(st.goals)}</textarea></div>
   <div class="field"><label class="lbl" for="limits">Limitations and exercises to avoid</label><textarea id="limits" data-in="limits" placeholder="e.g. No behind-the-neck presses. Go easy on deep knee flexion.">${esc(st.limits)}</textarea></div></section>`;
@@ -1019,11 +1044,10 @@ document.addEventListener("click",async ev=>{
     case "tab": S.tab=v;S.confirm=null;render();$("#main").scrollTop=0;return;
     case "gen-where": g.where=v;break;
     case "gen-energy": g.energy=v;break;
-    case "gen-focus": g.focus=v;g.muscles=[];break;
-    case "more-focus": S.moreFocus=!(S.moreFocus||g.focus==="custom");if(!S.moreFocus&&g.focus==="custom"){g.focus="auto";g.muscles=[];}break;
-    case "gen-muscle": if(g.focus!=="custom"){g.focus="custom";g.muscles=[];} g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v]; if(!g.muscles.length)g.focus="auto";break;
-    case "gen-act": {const [id,val]=v.split("|");g.acts={...(g.acts||{}),[id]:val};break;}
-    case "generate": generate();return;
+    case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
+    case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
+    case "gen-act": {const [id,val]=v.split("|");const cur=(g.acts||{})[id];const curN=cur==="more"?"more":cur?"less":"";g.acts={...(g.acts||{}),[id]:curN===val?"":val};break;}
+    case "generate": if(g.focus==="custom"&&!g.muscles.length){toast("Pick at least one muscle for a specific focus.");return;}generate();return;
     case "gen-cancel": genToken++;S.genBusy=false;break;
     case "tweak": if(!S.tweak.trim()){toast("Type what you'd like changed first.");return;} generate(S.tweak.trim());return;
     case "plan-clear": S.plan=null;savePlan();break;
@@ -1064,7 +1088,7 @@ document.addEventListener("click",async ev=>{
       ex.custom.push({name,muscles:[...f.muscles],sec:f.sec.filter(m=>!f.muscles.includes(m)),eq:[...f.eq],type:f.type});
       if(f.orig&&norm(f.orig)!==norm(name)&&DEFAULT_LIB.some(x=>norm(x.name)===norm(f.orig))&&!ex.hidden.some(h=>norm(h)===norm(f.orig))) ex.hidden.push(f.orig);
       ex.hidden=ex.hidden.filter(h=>norm(h)!==norm(name));
-      S.libEdit=null;saveSettings();toast("Exercise saved.");break;}
+      S.libEdit=null;S.libSel=name;S.libFilter=S.libFilter&&!f.muscles.includes(S.libFilter)?"":S.libFilter;saveSettings();toast("Exercise saved.");break;}
     case "lib-del": S.confirm=S.confirm==="libdel-"+norm(v)?null:"libdel-"+norm(v);break;
     case "lib-del-yes": {const ex=st.exLib=st.exLib||{custom:[],hidden:[]};ex.custom=(ex.custom||[]).filter(x=>norm(x.name)!==norm(v));ex.hidden=ex.hidden||[];
       if(DEFAULT_LIB.some(x=>norm(x.name)===norm(v))&&!ex.hidden.some(h=>norm(h)===norm(v)))ex.hidden.push(v);S.confirm=null;saveSettings();toast("Exercise removed from your list.");break;}
@@ -1104,14 +1128,16 @@ document.addEventListener("input",ev=>{
     case "prof-name": st.profiles[+t.dataset.i].name=t.value;saveSettingsSoon();break;
     case "bl": {const b=st.baselines[+t.dataset.i];const f=t.dataset.f;b[f]=f==="name"?t.value:t.value.replace(/[^0-9.,]/g,"");const el=$("#blh-"+t.dataset.i);if(el)el.textContent=blText(b);saveSettingsSoon();break;}
     case "act-name": st.activities[+t.dataset.i].name=t.value;saveSettingsSoon();break;
-    case "exp": st.experience=t.value;saveSettings();break;
+    case "exp": st.experience=EXPERIENCE[t.value]?t.value:"intermediate";saveSettings();render();break;
     case "goals": st.goals=t.value;saveSettingsSoon();break;
     case "lib-name": if(S.libEdit)S.libEdit.name=t.value;break;
+    case "lib-filter": S.libFilter=t.value;S.confirm=null;render();break;
+    case "lib-sel": S.libSel=t.value;S.confirm=null;render();break;
     case "limits": st.limits=t.value;saveSettingsSoon();break;
   }
 });
-document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT")||t.dataset.in==="hist-ex")){t.dispatchEvent(new Event("input",{bubbles:true}));}});
-document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.dataset&&d.dataset.lgrp){S.libOpen=S.libOpen||new Set();d.open?S.libOpen.add(d.dataset.lgrp):S.libOpen.delete(d.dataset.lgrp);return;}if(d&&d.dataset&&d.dataset.sid){S.openSess=S.openSess||new Set();d.open?S.openSess.add(d.dataset.sid):S.openSess.delete(d.dataset.sid);}},true);
+document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT")||t.dataset.in==="hist-ex"||t.dataset.in==="lib-filter"||t.dataset.in==="lib-sel")){t.dispatchEvent(new Event("input",{bubbles:true}));}});
+document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.dataset&&d.dataset.sid){S.openSess=S.openSess||new Set();d.open?S.openSess.add(d.dataset.sid):S.openSess.delete(d.dataset.sid);}},true);
 ["pointerdown","mousedown"].forEach(t=>document.addEventListener(t,e=>{if(e.target.closest&&e.target.closest(".xbtn"))e.preventDefault();}));
 setInterval(()=>{const e=$("#elapsed");if(e)e.textContent=elapsed();},30000);
 
