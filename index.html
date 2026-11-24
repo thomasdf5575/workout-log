@@ -402,10 +402,6 @@ function defaultSettings(){return {
     {id:"home",name:"Home",eq:["dumbbell","kettlebell","bands","rope","run"]},
     {id:"bw",name:"Bodyweight only",eq:["bands","run"]}
   ],
-  activities:[
-    {id:"badminton",name:"Badminton",spare:["biceps","triceps","forearms"]},
-    {id:"yoga",name:"Yoga",spare:["biceps","triceps","forearms"]}
-  ],
   experience:"intermediate", sex:"", style:"compound", priority:"both", perWeek:3, goals:"", limits:"",
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
   exLib:{custom:[],hidden:[]},
@@ -425,7 +421,7 @@ const sortedSessions=()=>[...S.sessions].sort((a,b)=>(b.date||"").localeCompare(
    offline, changes wait in a queue and are sent when the connection returns. */
 const ls={get(k){try{return JSON.parse(localStorage.getItem(k));}catch(e){return null;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}},del(k){try{localStorage.removeItem(k);}catch(e){}}};
 const clone=x=>x==null?x:JSON.parse(JSON.stringify(x));
-function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(!FOCUS[lg.focus])lg.focus="full";const ow=(x.lastGen||{}).what;if((x.lastGen||{}).mix===undefined&&ow)lg.mix=ow==="conditioning"?0:ow==="hybrid"?50:100;if(![0,25,50,75,100].includes(lg.mix))lg.mix=100;delete lg.what;return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles,activities:Array.isArray(x.activities)?x.activities:d.activities};}
+function mergeSettings(x){const d=defaultSettings();if(!x)return d;x=clone(x);const lg={...d.lastGen,...(x.lastGen||{})};if(!FOCUS[lg.focus])lg.focus="full";const ow=(x.lastGen||{}).what;if((x.lastGen||{}).mix===undefined&&ow)lg.mix=ow==="conditioning"?0:ow==="hybrid"?50:100;if(![0,25,50,75,100].includes(lg.mix))lg.mix=100;delete lg.what;return {...d,...x,lastGen:lg,baselines:Array.isArray(x.baselines)?x.baselines:d.baselines,profiles:x.profiles&&x.profiles.length?x.profiles:d.profiles};}
 const CFG=window.WORKOUT_CONFIG||{};
 let sb=null, user=null;
 const k=name=>`wl.${name}.${user?user.id:"anon"}`;
@@ -739,10 +735,6 @@ function buildPrompt(){
   const g=S.gen, st=S.settings, prof=profileByid(g.where), mix=mixOf(g), what=mix===100?"strength":mix===0?"conditioning":"hybrid";
   const {sMin,cMin}=splitMinutes(g.dur,mix);
   const vol=weekVolume(), since=daysSince();
-  const acts=st.activities.map(a=>({a,v:(g.acts||{})[a.id]})).filter(x=>x.v);
-  const actLines=acts.map(({a,v})=>v==="more"
-    ? `- ${a.name}: the trainee wants EXTRA work today for ${a.spare.join(", ")||"(no muscles listed)"}. Give these muscles 2-4 more hard sets than usual (direct exercises where possible), within the per-session cap.`
-    : `- ${a.name} (just done or coming up): keep ${a.spare.join(", ")||"(no muscles listed)"} fresh. No exercise with one of these as a main muscle, and avoid or keep light any compound that works them hard as assisting muscles (e.g. rows and pull-ups load biceps and forearms). Keep overall fatigue moderate.`).join("\n")||"- none";
   const focus=g.focus==="custom"?`Specific muscles only: ${g.muscles.join(", ")} (fill the session with these; other muscles only as needed for balance)`:g.focus==="upper"?"Upper body":g.focus==="lower"?"Lower body":"Full body (cover the muscles furthest below their weekly target)";
   const names=new Set();(st.baselines||[]).forEach(b=>{if(baselineFor(b.name))names.add(libFor(b.name)?libFor(b.name).name:b.name);});sortedSessions().filter(s=>daysBetween(s.date,todayISO())<=42).forEach(s=>(s.exercises||[]).forEach(e=>names.add(e.name)));
   // In a conditioning-only session, only lifts usable in workouts matter (for loads).
@@ -789,8 +781,6 @@ TODAY
 - Focus: ${focus}
 - Location: ${prof.name}. Equipment available: ${prof.eq.map(k=>EQUIP[k]).join(", ")||"none"} plus bodyweight.
 - Weights available here: ${weights.join("; ")||"not specified (assume a typical gym)"}. Prescribe ONLY these weights. If progression needs a weight that isn't available, progress reps, then sets, then a harder variation instead.
-- Activities:
-${actLines}
 - Today's instructions from the trainee (HIGHEST PRIORITY, override defaults where they conflict): ${g.note.trim()||"none"}
 
 TRAINEE
@@ -1112,10 +1102,7 @@ function viewPlan(){
   <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div></div>
   <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
     ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
-  if(st.activities.length){
-    h+=`<div class="field"><p class="lbl">Other activities</p><p class="muted small" style="margin:0">− trains that activity's muscles lightly or not at all today; + gives them extra work. Tap again to turn off.</p>${st.activities.map(a=>{const v=(g.acts||{})[a.id]||"";const vv=v==="more"?"more":v?"less":"";return `<div class="actrow"><span>${esc(a.name)}<br><span class="muted small">${esc(a.spare.join(", ")||"no muscles set")}</span></span><div class="seg">${chip("−",vv==="less","gen-act",a.id+"|less","sm")}${chip("+",vv==="more","gen-act",a.id+"|more","sm")}</div></div>`;}).join("")}</div>`;
-  }
-  h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Only one workout this week, so I can go longer. Left knee a bit sore.">${esc(g.note)}</textarea></div>`;
+  h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Badminton tomorrow, keep arms fresh. Left knee a bit sore. Only one workout this week, so I can go longer.">${esc(g.note)}</textarea></div>`;
   h+= S.genBusy
     ? `<div class="row"><span class="spinner" aria-hidden="true"></span><span>Building your session…</span><button class="btn ghost" data-a="gen-cancel">Cancel</button></div>`
     : `<button class="btn primary block" data-a="generate">${S.plan?"Generate a new session":"Generate session"}</button>`;
@@ -1348,14 +1335,9 @@ function viewSetup(){
     <p class="lbl" style="margin:0">Conditioning</p><div class="seg">${Object.keys(EQUIP).filter(k=>!EQUIP_STRENGTH.includes(k)).map(k=>chip(EQUIP[k],p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div>
     ${viewWeights(p,i)}</div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
-  const actH=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles each activity uses. On the Plan tab, tap − to train them lightly or not at all that day, or + to give them extra work.</p>
-  ${st.activities.map((a,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="an-${i}">Activity name</label><input type="text" id="an-${i}" data-in="act-name" data-i="${i}" value="${esc(a.name)}"><button class="btn ghost danger xbtn" data-a="act-del" data-i="${i}" aria-label="Delete ${esc(a.name)}">✕</button></div>
-    <div class="seg">${MUSCLES.map(m=>chip(cap(m),a.spare.includes(m),"act-m",i+"|"+m,"sm")).join("")}</div></div>`).join("")}
-  <button class="btn" data-a="act-add">Add an activity</button></section>`;
-  if(S.setupPage==="locations"||S.setupPage==="activities") return h+`<button class="btn ghost" data-a="setup-back" style="align-self:flex-start">← Setup</button>`+(S.setupPage==="locations"?locH:actH);
+  if(S.setupPage==="locations") return h+`<button class="btn ghost" data-a="setup-back" style="align-self:flex-start">← Setup</button>`+locH;
   h+=`<section class="card"><div class="exlist">
-    <button data-a="setup-page" data-v="locations"><span><b>Locations and equipment</b><br><span class="muted small">${st.profiles.map(x=>esc(x.name)).join(", ")}</span></span><span aria-hidden="true">›</span></button>
-    <button data-a="setup-page" data-v="activities"><span><b>Other activities</b><br><span class="muted small">${st.activities.map(x=>esc(x.name)).join(", ")||"None"}</span></span><span aria-hidden="true">›</span></button></div></section>`;
+    <button data-a="setup-page" data-v="locations"><span><b>Locations and equipment</b><br><span class="muted small">${st.profiles.map(x=>esc(x.name)).join(", ")}</span></span><span aria-hidden="true">›</span></button></div></section>`;
   h+=viewLibrary();
   const pk=prioOf(st);
   h+=`<section class="card"><h2>About you</h2>
@@ -1388,7 +1370,6 @@ document.addEventListener("click",async ev=>{
     case "gen-energy": g.energy=v;break;
     case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
     case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
-    case "gen-act": {const [id,val]=v.split("|");const cur=(g.acts||{})[id];const curN=cur==="more"?"more":cur?"less":"";g.acts={...(g.acts||{}),[id]:curN===val?"":val};break;}
     case "generate": if(g.focus==="custom"&&!g.muscles.length){toast("Pick at least one muscle for a specific focus.");return;}generate();return;
     case "gen-cancel": genToken++;S.genBusy=false;break;
     case "tweak": if(!S.tweak.trim()){toast("Type what you'd like changed first.");return;} generate(S.tweak.trim());return;
@@ -1454,7 +1435,6 @@ document.addEventListener("click",async ev=>{
     case "lib-reset-yes": st.exLib={custom:[],hidden:[]};S.confirm=null;saveSettings();toast("Default exercise list restored.");break;
     case "prof-add": st.profiles.push({id:uid(),name:"New location",eq:["dumbbell"]});saveSettings();break;
     case "prof-del": {const p=st.profiles.splice(i,1)[0];if(g.where===p.id)g.where=st.profiles[0].id;saveSettings();break;}
-    case "act-m": {const [ai,m]=v.split("|");const ac=st.activities[+ai];ac.spare=ac.spare.includes(m)?ac.spare.filter(x=>x!==m):[...ac.spare,m];saveSettings();break;}
     case "settings-save": {await saveSettings();await flush();const waiting=queue().some(o=>o.key==="settings");toast(!waiting?"Saved.":navigator.onLine?"Saved on this phone. It will sync shortly.":"Saved on this phone. It will sync when you're back online.");updateSync();return;}
     case "auth-mode": S.authMode=v;S.authMsg="";const em=$("#authEmail");if(em)S.authEmail=em.value;break;
     case "signout": {if(queue().length&&S.confirm!=="signout"){S.confirm="signout";break;}S.confirm=null;await sb.auth.signOut();setUser(null);return;}
@@ -1465,8 +1445,6 @@ document.addEventListener("click",async ev=>{
     case "per-week": st.perWeek=Math.max(1,Math.min(7,+v||3));saveSettings();break;
     case "bl-add": st.baselines.push({name:"",w:"",r:""});saveSettings();break;
     case "bl-del": {if(document.activeElement)document.activeElement.blur();st.baselines.splice(i,1);saveSettings();toast("Lift removed.");break;}
-    case "act-add": st.activities.push({id:uid(),name:"New activity",spare:[]});saveSettings();break;
-    case "act-del": st.activities.splice(i,1);saveSettings();break;
     case "export": {const data=JSON.stringify({app:"workout-log",version:1,exportedAt:new Date().toISOString(),settings:S.settings,sessions:sortedSessions()});try{await navigator.clipboard.writeText(data);toast(`Copied ${S.sessions.length} sessions.`);}catch(e){$("#imp").value=data;$("#imp").select();toast("Copy blocked. The backup is in the box below: select it and copy.");}return;}
     case "import": {let x;try{x=JSON.parse($("#imp").value);}catch(e){toast("That isn't a valid backup.");return;}const list=Array.isArray(x)?x:x.sessions;if(!Array.isArray(list)){toast("No sessions found in that backup.");return;}let n=0;const have=new Set(S.sessions.map(s=>s.id));for(const s of list){if(!s||!s.date||!Array.isArray(s.exercises))continue;const sess={...s,id:s.id&&!have.has(s.id)?String(s.id).replace(/[^A-Za-z0-9_\-.~:@+]/g,""):uid()};if(have.has(s.id))continue;await saveSession(sess);n++;}if(x.settings&&!Array.isArray(x)){S.settings=mergeSettings(x.settings);saveSettings();}toast(`Imported ${n} session${n===1?"":"s"}.`);$("#imp").value="";break;}
   }
@@ -1492,7 +1470,6 @@ document.addEventListener("input",ev=>{
       pr.w[key][f]=f==="spec"?t.value.replace(/[^0-9.,;\-– ]/g,""):t.value.replace(/[^0-9.,]/g,"");
       const el=$(`#wt-${t.dataset.i}-${key}`);if(el)el.textContent=availText(pr,key);saveSettingsSoon();break;}
     case "bl": {const b=st.baselines[+t.dataset.i];const f=t.dataset.f;b[f]=f==="name"?t.value:t.value.replace(/[^0-9.,]/g,"");const el=$("#blh-"+t.dataset.i);if(el)el.textContent=blText(b);saveSettingsSoon();break;}
-    case "act-name": st.activities[+t.dataset.i].name=t.value;saveSettingsSoon();break;
     case "exp": st.experience=EXPERIENCE[t.value]?t.value:"intermediate";saveSettings();render();break;
     case "goals": st.goals=t.value;saveSettingsSoon();break;
     case "lib-name": if(S.libEdit)S.libEdit.name=t.value;break;
