@@ -121,7 +121,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .exlist button{background:none;border:0;border-top:1px solid var(--line);padding:12px 2px;text-align:left;display:flex;justify-content:space-between;gap:10px;cursor:pointer}
 .exlist button:first-child{border-top:0}
 .chart{width:100%;height:auto;display:block}
-.chart text{fill:var(--muted);font-size:11px;font-family:var(--body)}
+.chart text{fill:var(--muted);font-size:19px;font-family:var(--body)}
 .empty{padding:22px 12px;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:12px;align-items:center}
 .banner{background:var(--warn-soft);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:14px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(132px + env(safe-area-inset-bottom));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:15px;z-index:9;max-width:90%;text-align:center}
@@ -201,7 +201,21 @@ Hanging leg raise|core|forearms|bars|b
 Cable crunch|core||cable|i
 Dead bug|core|||b
 Pallof press|core||cable|i`;
-const LIB = LIB_RAW.split("\n").map(l=>{const [name,main,sec,eq,type]=l.split("|");const muscles=main.split(",");return {name,muscle:muscles[0],muscles,sec:sec?sec.split(","):[],eq:eq?eq.split(" "):[],type};});
+const DEFAULT_LIB = LIB_RAW.split("\n").map(l=>{const [name,main,sec,eq,type]=l.split("|");const muscles=main.split(",");return {name,muscle:muscles[0],muscles,sec:sec?sec.split(","):[],eq:eq?eq.split(" "):[],type};});
+const TYPES = {c:"Compound",i:"Isolation",b:"Bodyweight",t:"Timed hold"};
+// The person's exercise list: the defaults, minus hidden ones, with their own added/edited entries
+// (settings.exLib.custom; an entry with a default's name replaces it). Rebuilt on every render.
+let LIB = DEFAULT_LIB;
+function cleanLibEntry(x){
+  if(!x||!String(x.name||"").trim()) return null;
+  const muscles=[...new Set((x.muscles||[]).filter(m=>MUSCLES.includes(m)))].slice(0,3); if(!muscles.length) return null;
+  return {name:String(x.name).trim().slice(0,60),muscle:muscles[0],muscles,sec:[...new Set((x.sec||[]).filter(m=>MUSCLES.includes(m)&&!muscles.includes(m)))],eq:(x.eq||[]).filter(k=>EQUIP[k]),type:TYPES[x.type]?x.type:"c",custom:true};
+}
+function rebuildLib(){
+  const c=(S.settings&&S.settings.exLib)||{}; const hidden=new Set((c.hidden||[]).map(norm));
+  const custom=(c.custom||[]).map(cleanLibEntry).filter(Boolean); const cn=new Set(custom.map(x=>norm(x.name)));
+  LIB=[...DEFAULT_LIB.filter(x=>!hidden.has(norm(x.name))&&!cn.has(norm(x.name))),...custom];
+}
 const RANGES = {c:[6,10],i:[10,15],b:[8,20],t:[30,60]};
 const FOCUS = {auto:"Auto (balance the week)",full:"Full body",upper:"Upper body",lower:"Lower body"};
 const STYLES = {compound:"Mostly compound",balanced:"Balanced",isolation:"More isolation"};
@@ -291,6 +305,7 @@ function defaultSettings(){return {
   ],
   experience:"intermediate", style:"compound", priority:"both", perWeek:3, goals:"", limits:"",
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
+  exLib:{custom:[],hidden:[]},
   lastGen:{where:"gym",dur:60,energy:"normal",focus:"auto",muscles:[]}
 };}
 const S = {
@@ -757,7 +772,7 @@ function renderStatus(){
   $("#status").textContent= S.mode!=="ready"?"":`${n} session${n===1?"":"s"} · ${S.syncText||""}`;
 }
 function render(){
-  syncWakeLock();
+  syncWakeLock(); rebuildLib();
   const m=$("#main"); const y=m.scrollTop;
   if(S.mode!=="ready"){$("#nav").innerHTML="";renderStatus();m.innerHTML=viewAuth();return;}
   renderNav();renderStatus();
@@ -893,36 +908,78 @@ function viewHistory(){
       </details>`;}).join("")}</section>`;
     return h;
   }
-  if(S.histEx) return h+viewExercise(S.histEx);
+  // Lifts with history, most recently trained first; weighted lifts before bodyweight-only ones.
   const names=[...new Set(sortedSessions().flatMap(s=>(s.exercises||[]).map(e=>e.name)))];
-  h+=`<section class="card"><div class="exlist">${names.map(n=>{const hh=exHistory(n);const hint=hintFor(n);return `<button data-a="hist-ex" data-v="${esc(n)}"><span><b>${esc(n)}</b><br><span class="muted small">${hh.length} session${hh.length===1?"":"s"} · last ${fmtDate(hh[0].date)}</span></span><span class="small kv" style="text-align:right">${esc(hh[0]?fmtSets(hh[0].sets):"")}${hint&&hint.stalled?`<br><span style="color:var(--warn)">Stalled</span>`:""}</span></button>`;}).join("")}</div></section>`;
-  return h;
+  const weighted=n=>exHistory(n).some(x=>x.sets.some(t=>num(t.w)>0));
+  const opts=[...names.filter(weighted),...names.filter(n=>!weighted(n))];
+  if(!opts.length) return h;
+  if(!opts.includes(S.histEx)) S.histEx=opts[0];
+  h+=`<section class="card"><div class="field"><label class="lbl" for="histEx">Lift</label><select id="histEx" data-in="hist-ex">${opts.map(n=>`<option value="${esc(n)}" ${n===S.histEx?"selected":""}>${esc(n)}${weighted(n)?"":" (bodyweight)"}</option>`).join("")}</select></div></section>`;
+  return h+viewExercise(S.histEx);
 }
 function viewExercise(name){
   const hh=exHistory(name).slice().reverse();const hint=hintFor(name);
-  const pts=hh.map(x=>({date:x.date,v:Math.max(...x.sets.map(s=>e1rm(num(s.w),s.r))),top:Math.max(...x.sets.map(s=>num(s.w)))}));
-  const bw=pts.every(p=>p.top===0);
-  let chart="";
+  const bw=hh.every(x=>x.sets.every(s=>num(s.w)===0));
+  // Estimated 1RM per session (Epley) from the best set; sets of 12 reps or fewer when there are any,
+  // because the formula overestimates at high reps. Bodyweight lifts chart best reps instead.
+  const val=x=>{if(bw)return Math.max(...x.sets.map(s=>num(s.r)));const ws=x.sets.filter(s=>num(s.w)>0);const low=ws.filter(s=>s.r<=12);return Math.max(...(low.length?low:ws).map(s=>e1rm(num(s.w),s.r)));};
+  const pts=hh.map(x=>({date:x.date,v:val(x)})).filter(p=>isFinite(p.v)&&p.v>0);
+  const unit=bw?"reps":"kg", fmtV=v=>bw?String(Math.round(v)):fmtKg(Math.round(v*2)/2);
+  let chart="", stats="";
+  if(pts.length){
+    const cur=pts[pts.length-1].v, best=Math.max(...pts.map(p=>p.v)), first=pts[0].v;
+    const days=daysBetween(pts[0].date,pts[pts.length-1].date);
+    stats=`<div class="row" style="gap:18px"><div><p class="lbl" style="margin:0">${bw?"Latest best set":"Latest est. 1RM"}</p><b style="font-size:22px">${fmtV(cur)} ${unit}</b></div><div><p class="lbl" style="margin:0">Best</p><b style="font-size:22px">${fmtV(best)} ${unit}</b></div>${pts.length>1&&first>0?`<div><p class="lbl" style="margin:0">Change</p><b style="font-size:22px">${cur>=first?"+":""}${Math.round(100*(cur-first)/first)}%</b><span class="muted small"> in ${days<14?days+" days":Math.round(days/7)+" weeks"}</span></div>`:""}</div>`;
+  }
   if(pts.length>=2){
-    const W=560,H=200,L=40,R=12,T=12,B=26;const vs=pts.map(p=>p.v);let lo=Math.min(...vs),hi=Math.max(...vs);if(hi-lo<1){hi+=1;lo-=1;}const pad=(hi-lo)*0.15;lo=Math.max(0,lo-pad);hi+=pad;
-    const x=i=>L+(W-L-R)*(pts.length===1?0.5:i/(pts.length-1));const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
+    const W=560,H=260,L=56,R=12,T=14,B=34;const vs=pts.map(p=>p.v);let lo=Math.min(...vs),hi=Math.max(...vs);if(hi-lo<1){hi+=1;lo-=1;}const pad=(hi-lo)*0.15;lo=Math.max(0,lo-pad);hi+=pad;
+    const span=Math.max(1,daysBetween(pts[0].date,pts[pts.length-1].date));
+    const x=p=>L+(W-L-R)*daysBetween(pts[0].date,p.date)/span;const y=v=>T+(H-T-B)*(1-(v-lo)/(hi-lo));
     const ticks=[lo,(lo+hi)/2,hi];
-    const line=pts.map((p,i)=>`${i?"L":"M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
-    const area=line+`L${x(pts.length-1).toFixed(1)},${H-B}L${x(0).toFixed(1)},${H-B}Z`;
-    chart=`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${bw?"Best reps":"Estimated one-rep max"} per session for ${esc(name)}">
-      ${ticks.map(t=>`<line x1="${L}" x2="${W-R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)"/><text x="${L-6}" y="${y(t)+4}" text-anchor="end">${Math.round(t)}</text>`).join("")}
+    const line=pts.map((p,i)=>`${i?"L":"M"}${x(p).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+    const area=line+`L${x(pts[pts.length-1]).toFixed(1)},${H-B}L${x(pts[0]).toFixed(1)},${H-B}Z`;
+    chart=`<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${bw?"Best reps":"Estimated one-rep max"} over time for ${esc(name)}">
+      ${ticks.map(t=>`<line x1="${L}" x2="${W-R}" y1="${y(t)}" y2="${y(t)}" stroke="var(--line)"/><text x="${L-8}" y="${y(t)+6}" text-anchor="end">${Math.round(t)}</text>`).join("")}
       <path d="${area}" fill="var(--accent)" opacity=".12"/><path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
-      ${pts.map((p,i)=>`<circle cx="${x(i)}" cy="${y(p.v)}" r="${i===pts.length-1?5:3}" fill="var(--accent)"/>`).join("")}
-      <text x="${x(0)}" y="${H-6}" text-anchor="start">${fmtDate(pts[0].date)}</text><text x="${x(pts.length-1)}" y="${H-6}" text-anchor="end">${fmtDate(pts[pts.length-1].date)}</text>
-    </svg><p class="muted small" style="margin:0">${bw?"Best set, in reps.":"Estimated one-rep max (kg) from your best set, using the Epley formula."}</p>`;
-  }else chart=`<p class="muted small" style="margin:0">The chart appears after two sessions with this exercise.</p>`;
-  return `<section class="card"><button class="btn ghost" data-a="hist-back" style="align-self:flex-start">← All exercises</button><h2>${esc(name)}</h2>
+      ${pts.map((p,i)=>`<circle cx="${x(p)}" cy="${y(p.v)}" r="${i===pts.length-1?5:3}" fill="var(--accent)"><title>${fmtDate(p.date)}: ${fmtV(p.v)} ${unit}</title></circle>`).join("")}
+      <text x="${x(pts[0])}" y="${H-8}" text-anchor="start">${fmtDate(pts[0].date)}</text><text x="${x(pts[pts.length-1])}" y="${H-8}" text-anchor="end">${fmtDate(pts[pts.length-1].date)}</text>
+    </svg><p class="muted small" style="margin:0">${bw?"Best set per session, in reps.":"Estimated one-rep max (kg) per session from your best set of 12 reps or fewer (Epley formula). An estimate, not a tested max."}</p>`;
+  }else chart=`<p class="muted small" style="margin:0">The graph appears after two sessions with this lift.</p>`;
+  return `<section class="card"><h2>${esc(name)}</h2>
+    ${stats}
     ${hint?`<div class="hint ${hint.stalled?"stall":""}">Next time: <strong>${hint.next.w>0?fmtKg(hint.next.w)+" kg × ":""}${esc(hint.next.reps)}</strong> · ${esc(hint.why)}</div>`:""}
     ${chart}
     <div>${exHistory(name).slice(0,12).map(x=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${fmtDate(x.date)}${(b=>x.sets.some(t=>isPR(t,b)))(bestBefore(name,x.date,x.id,x.savedAt))?`<span class="pr" title="Personal record">PR</span>`:""}</span><span class="kv">${esc(fmtSets(x.sets))}</span></div>`).join("")}</div></section>`;
 }
 
 function blText(b){if(!b||!b.name||!(num(b.r)>0))return "";if(!libFor(b.name)&&!(num(b.w)>0))return "";const h=baselineHint(b.name);if(!h)return "";return `→ start at ${h.next.w>0?fmtKg(h.next.w)+" kg × ":""}${h.next.reps}`;}
+function viewLibrary(){
+  const f=S.libEdit, ex=(S.settings.exLib)||{custom:[],hidden:[]};
+  let h=`<section class="card" id="libCard"><h2>Exercises</h2><p class="muted small" style="margin:0">The plan generator picks from this list, filtered by each location's equipment. In the Log you can still type any exercise.</p>`;
+  if(f){
+    h+=`<div class="prof"><h3 style="margin:0">${f.orig?"Edit exercise":"New exercise"}</h3>
+      <div class="field"><label class="lbl" for="libName">Name</label><input type="text" id="libName" data-in="lib-name" value="${esc(f.name)}" placeholder="e.g. Hack squat" autocomplete="off"></div>
+      ${f.orig&&norm(f.orig)!==norm(f.name)&&f.name.trim()?`<p class="muted small" style="margin:0">Renaming doesn't change past sessions: their history stays under "${esc(f.orig)}".</p>`:""}
+      <div class="field"><p class="lbl">Main muscles (1–3)</p><div class="seg">${MUSCLES.map(m=>chip(cap(m),f.muscles.includes(m),"lib-main",m,"sm")).join("")}</div></div>
+      <div class="field"><p class="lbl">Also works</p><div class="seg">${MUSCLES.filter(m=>!f.muscles.includes(m)).map(m=>chip(cap(m),f.sec.includes(m),"lib-sec",m,"sm")).join("")}</div></div>
+      <div class="field"><p class="lbl">Equipment needed</p><div class="seg">${Object.entries(EQUIP).map(([k,l])=>chip(l,f.eq.includes(k),"lib-eq",k,"sm")).join("")}</div><p class="muted small" style="margin:6px 0 0">Tick everything it needs. Nothing ticked means bodyweight only.</p></div>
+      <div class="field"><p class="lbl">Type</p><div class="seg">${Object.entries(TYPES).map(([k,l])=>chip(l,f.type===k,"lib-type",k,"sm")).join("")}</div><p class="muted small" style="margin:6px 0 0">Sets the default rep range: compound 6–10, isolation 10–15, bodyweight 8–20, timed 30–60 s.</p></div>
+      <div class="row"><button class="btn primary" data-a="lib-save">Save exercise</button><button class="btn" data-a="lib-cancel">Cancel</button></div></div></section>`;
+    return h;
+  }
+  h+=`<button class="btn" data-a="lib-add" style="align-self:flex-start">Add an exercise</button>`;
+  const dn=new Set(DEFAULT_LIB.map(x=>norm(x.name)));
+  const groups=MUSCLES.map(m=>[m,LIB.filter(x=>x.muscles[0]===m).sort((a,b)=>a.name.localeCompare(b.name))]).filter(g=>g[1].length);
+  h+=groups.map(([m,list])=>`<details class="sess" data-lgrp="${m}" ${S.libOpen&&S.libOpen.has(m)?"open":""}><summary><span><b>${cap(m)}</b></span><span class="muted small">${list.length}</span></summary>
+    ${list.map(x=>{const key=norm(x.name);return `<div class="prof" style="gap:4px"><div class="row between" style="flex-wrap:nowrap"><span><b>${esc(x.name)}</b>${x.custom?` <span class="muted small">(${dn.has(key)?"edited":"added"})</span>`:""}<br><span class="muted small">${esc(x.muscles.join(", "))}${x.sec.length?` · also ${esc(x.sec.join(", "))}`:""} · ${esc(x.eq.length?x.eq.map(k=>EQUIP[k]).join(", "):"bodyweight")} · ${esc(TYPES[x.type]||"")}</span></span>
+      <span class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn ghost" data-a="lib-edit" data-v="${esc(x.name)}" aria-label="Edit ${esc(x.name)}">Edit</button><button class="btn ghost danger" data-a="lib-del" data-v="${esc(x.name)}" aria-label="Remove ${esc(x.name)}">✕</button></span></div>
+      ${S.confirm==="libdel-"+key?`<div class="inline-confirm"><span class="small">Remove ${esc(x.name)} from your list? Past sessions keep it.</span><button class="btn danger" data-a="lib-del-yes" data-v="${esc(x.name)}">Remove</button><button class="btn" data-a="confirm-no">Keep</button></div>`:""}</div>`;}).join("")}
+  </details>`).join("");
+  if((ex.custom||[]).length||(ex.hidden||[]).length) h+= S.confirm==="libreset"
+    ? `<div class="inline-confirm"><span class="small">Go back to the default list? Your added and edited exercises will be removed.</span><button class="btn danger" data-a="lib-reset-yes">Restore defaults</button><button class="btn" data-a="confirm-no">Keep</button></div>`
+    : `<button class="btn ghost danger" data-a="lib-reset" style="align-self:flex-start">Restore the default list</button>`;
+  return h+`</section>`;
+}
 function viewSetup(){
   const st=S.settings;
   let h=`<div class="row between" style="position:sticky;top:0;z-index:2;background:var(--bg);padding:4px 0"><span class="muted small" id="saveState" role="status">Changes save automatically</span><button class="btn primary" data-a="settings-save">Save</button></div>`;
@@ -930,6 +987,7 @@ function viewSetup(){
   ${st.profiles.map((p,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="pn-${i}">Location name</label><input type="text" id="pn-${i}" data-in="prof-name" data-i="${i}" value="${esc(p.name)}">${st.profiles.length>1?`<button class="btn ghost danger xbtn" data-a="prof-del" data-i="${i}" aria-label="Delete ${esc(p.name)}">✕</button>`:""}</div>
     <div class="seg">${Object.entries(EQUIP).map(([k,l])=>chip(l,p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div></div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
+  h+=viewLibrary();
   h+=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles to keep fresh for each one. On the Plan tab, mark an activity as "Coming up" and the generator won't train those muscles.</p>
   ${st.activities.map((a,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="an-${i}">Activity name</label><input type="text" id="an-${i}" data-in="act-name" data-i="${i}" value="${esc(a.name)}"><button class="btn ghost danger xbtn" data-a="act-del" data-i="${i}" aria-label="Delete ${esc(a.name)}">✕</button></div>
     <div class="seg">${MUSCLES.map(m=>chip(cap(m),a.spare.includes(m),"act-m",i+"|"+m,"sm")).join("")}</div></div>`).join("")}
@@ -984,13 +1042,34 @@ document.addEventListener("click",async ev=>{
     case "discard": S.confirm="discard";break;
     case "discard-yes": S.draft=null;S.confirm=null;saveDraftSoon();break;
     case "confirm-no": S.confirm=null;break;
-    case "hist-tab": S.histTab=v;S.histEx=null;break;
-    case "hist-ex": S.histEx=v;render();$("#main").scrollTop=0;return;
-    case "hist-back": S.histEx=null;break;
+    case "hist-tab": S.histTab=v;break;
     case "sess-del": S.confirm="del-"+v;break;
     case "sess-edit": {if(S.draft&&S.draft.exercises.length){toast(S.draft.editing?"Save or cancel the session you're editing first.":"Finish or discard the workout in progress first.");S.tab="log";break;}const s=S.sessions.find(x=>x.id===v);if(!s)break;S.draft=draftFromSession(s);saveDraftSoon();S.confirm=null;S.tab="log";render();$("#main").scrollTop=0;return;}
     case "sess-del-yes": deleteSession(v);S.confirm=null;toast("Session deleted.");break;
     case "prof-eq": {const [pi,k]=v.split("|");const p=st.profiles[+pi];p.eq=p.eq.includes(k)?p.eq.filter(x=>x!==k):[...p.eq,k];saveSettings();break;}
+    case "lib-add": S.libEdit={orig:null,name:"",muscles:[],sec:[],eq:[],type:"c"};S.confirm=null;render();$("#libCard")?.scrollIntoView({block:"start"});return;
+    case "lib-edit": {const x=LIB.find(e=>e.name===v);if(!x)break;S.libEdit={orig:x.name,name:x.name,muscles:[...x.muscles],sec:[...x.sec],eq:[...x.eq],type:x.type||"c"};S.confirm=null;render();$("#libCard")?.scrollIntoView({block:"start"});return;}
+    case "lib-cancel": S.libEdit=null;break;
+    case "lib-main": {const f=S.libEdit;if(f.muscles.includes(v))f.muscles=f.muscles.filter(m=>m!==v);else if(f.muscles.length>=3){toast("Up to 3 main muscles. Untick one first.");return;}else{f.muscles.push(v);f.sec=f.sec.filter(m=>m!==v);}break;}
+    case "lib-sec": {const f=S.libEdit;f.sec=f.sec.includes(v)?f.sec.filter(m=>m!==v):[...f.sec,v];break;}
+    case "lib-eq": {const f=S.libEdit;f.eq=f.eq.includes(v)?f.eq.filter(k=>k!==v):[...f.eq,v];break;}
+    case "lib-type": S.libEdit.type=v;break;
+    case "lib-save": {const f=S.libEdit, name=f.name.trim();
+      if(!name){toast("Give the exercise a name.");return;}
+      if(!f.muscles.length){toast("Pick at least one main muscle.");return;}
+      if(LIB.some(x=>norm(x.name)===norm(name)&&norm(x.name)!==norm(f.orig||""))){toast("There's already an exercise with that name.");return;}
+      const ex=st.exLib=st.exLib||{custom:[],hidden:[]}; ex.custom=ex.custom||[]; ex.hidden=ex.hidden||[];
+      const drop=new Set([norm(name),norm(f.orig||"")]);
+      ex.custom=ex.custom.filter(x=>!drop.has(norm(x.name)));
+      ex.custom.push({name,muscles:[...f.muscles],sec:f.sec.filter(m=>!f.muscles.includes(m)),eq:[...f.eq],type:f.type});
+      if(f.orig&&norm(f.orig)!==norm(name)&&DEFAULT_LIB.some(x=>norm(x.name)===norm(f.orig))&&!ex.hidden.some(h=>norm(h)===norm(f.orig))) ex.hidden.push(f.orig);
+      ex.hidden=ex.hidden.filter(h=>norm(h)!==norm(name));
+      S.libEdit=null;saveSettings();toast("Exercise saved.");break;}
+    case "lib-del": S.confirm=S.confirm==="libdel-"+norm(v)?null:"libdel-"+norm(v);break;
+    case "lib-del-yes": {const ex=st.exLib=st.exLib||{custom:[],hidden:[]};ex.custom=(ex.custom||[]).filter(x=>norm(x.name)!==norm(v));ex.hidden=ex.hidden||[];
+      if(DEFAULT_LIB.some(x=>norm(x.name)===norm(v))&&!ex.hidden.some(h=>norm(h)===norm(v)))ex.hidden.push(v);S.confirm=null;saveSettings();toast("Exercise removed from your list.");break;}
+    case "lib-reset": S.confirm="libreset";break;
+    case "lib-reset-yes": st.exLib={custom:[],hidden:[]};S.confirm=null;saveSettings();toast("Default exercise list restored.");break;
     case "prof-add": st.profiles.push({id:uid(),name:"New location",eq:["dumbbell"]});saveSettings();break;
     case "prof-del": {const p=st.profiles.splice(i,1)[0];if(g.where===p.id)g.where=st.profiles[0].id;saveSettings();break;}
     case "act-m": {const [ai,m]=v.split("|");const ac=st.activities[+ai];ac.spare=ac.spare.includes(m)?ac.spare.filter(x=>x!==m):[...ac.spare,m];saveSettings();break;}
@@ -1015,6 +1094,7 @@ document.addEventListener("input",ev=>{
   switch(k){
     case "gen-note": S.gen.note=t.value;break;
     case "tweak": S.tweak=t.value;break;
+    case "hist-ex": S.histEx=t.value;render();break;
     case "set": {const ex=d.exercises[+t.dataset.i], st0=ex.sets[+t.dataset.j];st0[t.dataset.f]=t.dataset.f==="rir"?(/^[0-3]$/.test(t.value)?t.value:""):t.value.replace(/[^0-9.,]/g,"");saveDraftSoon();
       const el=$(`#pr-${t.dataset.i}-${t.dataset.j}`);if(el)el.innerHTML=isPR(st0,bestBefore(ex.name,d.date,d.id,d.editing?d.savedAt:Infinity))?`<span class="pr" title="Personal record">PR</span>`:"";break;}
     case "d-date": d.date=t.value||todayISO();saveDraftSoon();break;
@@ -1026,11 +1106,12 @@ document.addEventListener("input",ev=>{
     case "act-name": st.activities[+t.dataset.i].name=t.value;saveSettingsSoon();break;
     case "exp": st.experience=t.value;saveSettings();break;
     case "goals": st.goals=t.value;saveSettingsSoon();break;
+    case "lib-name": if(S.libEdit)S.libEdit.name=t.value;break;
     case "limits": st.limits=t.value;saveSettingsSoon();break;
   }
 });
-document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT"))){t.dispatchEvent(new Event("input",{bubbles:true}));}});
-document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.dataset&&d.dataset.sid){S.openSess=S.openSess||new Set();d.open?S.openSess.add(d.dataset.sid):S.openSess.delete(d.dataset.sid);}},true);
+document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT")||t.dataset.in==="hist-ex")){t.dispatchEvent(new Event("input",{bubbles:true}));}});
+document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.dataset&&d.dataset.lgrp){S.libOpen=S.libOpen||new Set();d.open?S.libOpen.add(d.dataset.lgrp):S.libOpen.delete(d.dataset.lgrp);return;}if(d&&d.dataset&&d.dataset.sid){S.openSess=S.openSess||new Set();d.open?S.openSess.add(d.dataset.sid):S.openSess.delete(d.dataset.sid);}},true);
 ["pointerdown","mousedown"].forEach(t=>document.addEventListener(t,e=>{if(e.target.closest&&e.target.closest(".xbtn"))e.preventDefault();}));
 setInterval(()=>{const e=$("#elapsed");if(e)e.textContent=elapsed();},30000);
 
