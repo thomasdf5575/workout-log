@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION whenever you change files, so phones pick up the new version.
-const VERSION = "wl-v4";
+const VERSION = "wl-v5";
 const SHELL = [
   "./", "./index.html", "./config.js", "./manifest.webmanifest",
   "./vendor/supabase.js", "./vendor/591.supabase.js",
