@@ -152,20 +152,20 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 "use strict";
 /* ---------------- Reference data ---------------- */
 const MUSCLES = ["chest","back","shoulders","biceps","triceps","forearms","quads","hamstrings","glutes","calves","core"];
-const EQUIP = {barbell:"Barbell & rack",dumbbell:"Dumbbells",bench:"Bench",machine:"Machines",cable:"Cable stack",bars:"Pull-up / dip bars",kettlebell:"Kettlebell",bands:"Bands",
+const EQUIP = {barbell:"Barbell & rack",trapbar:"Trap bar",dumbbell:"Dumbbells",bench:"Bench",machine:"Machines",cable:"Cable stack",bars:"Pull-up / dip bars",kettlebell:"Kettlebell",bands:"Bands",
   rower:"Rower",bike:"Air bike",ski:"Ski machine",rope:"Jump rope",box:"Plyo box",rings:"Rings",wallball:"Wall ball",sandbag:"Sandbag",sled:"Sled",climb:"Climbing rope",ghd:"GHD",run:"Can run outside"};
-const EQUIP_STRENGTH=["barbell","dumbbell","bench","machine","cable","bars","kettlebell","bands"];
+const EQUIP_STRENGTH=["barbell","trapbar","dumbbell","bench","machine","cable","bars","kettlebell","bands"];
 // Equipment whose available weights can be set per location. kind: list = specific weights or ranges,
 // plates = bar + smallest plate, stack = machine step. step = default step for ranges like "4-16".
-const WEIGHTED = {barbell:{kind:"plates"},dumbbell:{kind:"list",step:2,ph:"e.g. 2-40"},kettlebell:{kind:"list",step:4,ph:"e.g. 20 or 8-24"},
+const WEIGHTED = {barbell:{kind:"plates",bar:20},trapbar:{kind:"plates",bar:25},dumbbell:{kind:"list",step:2,ph:"e.g. 2-40"},kettlebell:{kind:"list",step:4,ph:"e.g. 20 or 8-24"},
   wallball:{kind:"list",step:1,ph:"e.g. 6, 9"},sandbag:{kind:"list",step:5,ph:"e.g. 20, 40"},machine:{kind:"stack",step:5},cable:{kind:"stack",step:2.5}};
 // Which implement sets the weight for an exercise (first match wins).
-const LOAD_ORDER=["barbell","dumbbell","kettlebell","wallball","sandbag","machine","cable","sled"];
+const LOAD_ORDER=["barbell","trapbar","dumbbell","kettlebell","wallball","sandbag","machine","cable","sled"];
 const loadKind=info=>info?LOAD_ORDER.find(k=>info.eq.includes(k))||null:null;
 // Available weights at a location for one implement: sorted list of kg, or null if not set (assume a typical gym).
 function availList(prof,key){
   const cfg=WEIGHTED[key], w=prof&&prof.w&&prof.w[key]; if(!cfg||!w) return null;
-  if(cfg.kind==="plates"){const bar=num(w.bar)||20, plate=num(w.plate)||0; if(!plate) return null; const out=[];for(let x=bar;x<=bar+400;x+=2*plate)out.push(Math.round(x*100)/100);return out;}
+  if(cfg.kind==="plates"){const bar=num(w.bar)||cfg.bar||20, plate=num(w.plate)||0; if(!plate) return null; const out=[];for(let x=bar;x<=bar+400;x+=2*plate)out.push(Math.round(x*100)/100);return out;}
   if(cfg.kind==="stack"){const st=num(w.step);if(!st)return null;const out=[];for(let x=st;x<=300;x+=st)out.push(Math.round(x*100)/100);return out;}
   const step=num(w.step)||cfg.step, out=new Set();
   String(w.spec||"").split(/[,;]/).forEach(part=>{const m=part.trim().match(/^(\d+(?:[.,]\d+)?)\s*(?:-|–|to)\s*(\d+(?:[.,]\d+)?)$/);
@@ -175,7 +175,7 @@ function availList(prof,key){
 }
 function availText(prof,key){
   const cfg=WEIGHTED[key], w=prof&&prof.w&&prof.w[key]; if(!cfg||!w) return "";
-  if(cfg.kind==="plates") return num(w.plate)?`${num(w.bar)||20} kg bar, loads in ${2*num(w.plate)} kg jumps`:"";
+  if(cfg.kind==="plates") return num(w.plate)?`${num(w.bar)||cfg.bar||20} kg bar, loads in ${2*num(w.plate)} kg jumps`:"";
   if(cfg.kind==="stack") return num(w.step)?`stack in ${num(w.step)} kg steps`:"";
   const l=availList(prof,key); if(!l) return "";
   return l.length<=8?`${l.join(", ")} kg`:`${l[0]}–${l[l.length-1]} kg in ${num(w.step)||cfg.step} kg steps`;
@@ -307,7 +307,10 @@ Overhead carry|shoulders,core|triceps|kettlebell|t|b|m|core|intermediate|Suitcas
 Turkish get-up|shoulders,core,glutes|triceps,quads|kettlebell|c|b|reps|core|intermediate|Dead bug
 Med ball slam|core,shoulders,back|glutes|wallball|c|c|reps|hinge|basic|
 Bear crawl|core,shoulders|quads||b|c|m|core|basic|Plank
-Broad jump|quads,glutes|calves,hamstrings||b|c|reps|squat|intermediate|Bodyweight squat`;
+Broad jump|quads,glutes|calves,hamstrings||b|c|reps|squat|intermediate|Bodyweight squat
+Trap bar deadlift|quads,glutes,hamstrings|back,forearms,core|trapbar|c|b|reps|hinge|basic|
+Trap bar carry|forearms,core|back,quads,shoulders|trapbar|t|b|m|core|basic|Farmer's carry
+Trap bar jump|quads,glutes|calves,hamstrings|trapbar|c|c|reps|squat|intermediate|Broad jump`;
 const USES={s:"Strength",c:"Conditioning",b:"Both"}, UNITS={reps:"Reps",cal:"Calories",m:"Metres",s:"Seconds"};
 const PATTERNS=["push","pull","squat","hinge","core","cardio"], SKILLS=["basic","intermediate","advanced"];
 // Default movement pattern from the first main muscle, for entries that don't set one.
@@ -409,7 +412,8 @@ function rangeOf(info){return RANGES[(info&&info.type)||"c"];}
 function incOf(info){
   if(!info) return 2.5;
   const lower=(info.muscles||[info.muscle]).some(m=>["quads","hamstrings","glutes"].includes(m));
-  if(info.eq.includes("barbell")){const pl=num(((curProf()||{}).w||{}).barbell?.plate);const small=pl?2*pl:2.5;return lower&&expOf(S.settings)!=="advanced"?Math.max(5,small):small;}
+  const bk=info.eq.includes("barbell")?"barbell":info.eq.includes("trapbar")?"trapbar":null;
+  if(bk){const pl=num(((curProf()||{}).w||{})[bk]?.plate);const small=pl?2*pl:2.5;return lower&&expOf(S.settings)!=="advanced"?Math.max(5,small):small;}
   if(info.eq.includes("dumbbell")) return 2;
   if(info.eq.includes("kettlebell")) return 4;
   return 2.5;
@@ -670,7 +674,9 @@ function hintFor(name){
   let next,why;
   // Going up: the next available weight at this location; if there is none, progress reps, then sets.
   const prof=curProf(), lk=loadKind(info);
-  const goUp=why0=>{const x=snapW(prof,info,topW,"up");const up=x===topW?Math.round((topW+incOf(info))*100)/100:x;
+  // Smallest available weight at least one increment up; else any heavier one; else null.
+  const goUp=why0=>{const target=Math.round((topW+incOf(info))*100)/100, x=snapW(prof,info,target-0.001,"up");
+    const up=x===target-0.001?target:x!==null?x:snapW(prof,info,topW,"up");
     if(up===null){next={w:topW,reps:`${hi}+`};why=`No heavier ${(EQUIP[lk]||"weight").toLowerCase()} at ${prof.name}: add reps above ${hi}, then add a set`;}
     else{next={w:up,reps:`${lo}–${hi}`};why=why0;}};
   // Last weight isn't available here (e.g. logged at another gym): use the nearest one and adjust reps.
@@ -1290,7 +1296,7 @@ function viewWeights(p,i){
   const w=p.w||{}, inp=(k,f,val,ph,width,label)=>`<label class="sr" for="w-${i}-${k}-${f}">${esc(label)}</label><input type="text" inputmode="decimal" id="w-${i}-${k}-${f}" data-in="prof-w" data-i="${i}" data-k="${k}" data-f="${f}" value="${esc(val??"")}" placeholder="${esc(ph)}" style="width:${width};text-align:center">`;
   return `<details class="sess"><summary><span><b>Weights available</b><br><span class="muted small">Optional. Plans and suggestions only use these.</span></span></summary>
     ${keys.map(k=>{const c=WEIGHTED[k], x=w[k]||{};
-      const body=c.kind==="plates"?`${inp(k,"bar",x.bar,"20",'64px',"Bar weight in kg")}<span class="muted small">kg bar, smallest plate</span>${inp(k,"plate",x.plate,"1.25",'64px',"Smallest plate in kg")}<span class="muted small">kg</span>`
+      const body=c.kind==="plates"?`${inp(k,"bar",x.bar,String(c.bar||20),'64px',"Bar weight in kg")}<span class="muted small">kg bar, smallest plate</span>${inp(k,"plate",x.plate,"1.25",'64px',"Smallest plate in kg")}<span class="muted small">kg</span>`
         :c.kind==="stack"?`<span class="muted small">steps of</span>${inp(k,"step",x.step,String(c.step),'64px',"Stack step in kg")}<span class="muted small">kg</span>`
         :`${inp(k,"spec",x.spec,c.ph,'120px',"Weights in kg")}<span class="muted small">kg, ranges in steps of</span>${inp(k,"step",x.step,String(c.step),'52px',"Step for ranges in kg")}`;
       return `<div style="display:flex;flex-direction:column;gap:4px;padding:6px 0;border-top:1px solid var(--line)"><b class="small">${esc(EQUIP[k])}</b><div class="row" style="flex-wrap:nowrap;align-items:center;gap:6px">${body}</div><div class="muted small" id="wt-${i}-${k}">${esc(availText(p,k))}</div></div>`;}).join("")}
