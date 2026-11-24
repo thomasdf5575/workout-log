@@ -108,13 +108,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .sets abbr{text-decoration:none}
 .check{width:48px;height:44px;border-radius:10px;border:1px solid var(--line);background:var(--sunk);cursor:pointer;display:grid;place-items:center}
 .check[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
+.pr{display:inline-block;margin-left:6px;font-size:11px;font-weight:700;letter-spacing:.04em;padding:1px 5px;border-radius:5px;background:var(--accent);color:#fff;vertical-align:middle}
+.sets td:first-child .pr{display:block;margin:2px auto 0;width:max-content}
 .check svg{width:20px;height:20px}
-.restbar{position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:6;padding:0 12px}
-.restbar .in{width:100%;max-width:616px;background:var(--ink);color:var(--bg);border-radius:12px;padding:10px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 6px 24px rgba(0,0,0,.25)}
-.restbar .time{font-family:var(--display);font-weight:700;font-size:26px;font-variant-numeric:tabular-nums;min-width:64px}
-.restbar .prog{flex:1;height:6px;background:rgba(127,127,127,.35);border-radius:3px;overflow:hidden}
-.restbar .prog div{height:100%;background:var(--accent)}
-.restbar button{background:transparent;border:1px solid rgba(127,127,127,.5);color:inherit;border-radius:8px;padding:6px 10px;font-weight:600;cursor:pointer;min-height:36px}
 /* history */
 .sess{border-top:1px solid var(--line);padding:12px 0;display:flex;flex-direction:column;gap:6px}
 .sess:first-of-type{border-top:0;padding-top:0}
@@ -140,7 +136,6 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <header><h1>Workout Log</h1><div class="status" id="status">Loading…</div></header>
   <main id="main" tabindex="-1"></main>
 </div>
-<div id="restbar"></div>
 <div id="toast" class="toast" hidden></div>
 <nav aria-label="Sections"><div class="in" id="nav"></div></nav>
 
@@ -302,7 +297,7 @@ const S = {
   tab:"plan", mode:"loading", stale:false, syncText:"", authMode:"signin", authMsg:"", authBusy:false, recovery:false,
   settings:defaultSettings(), sessions:[], plan:null, draft:null,
   gen:null, genBusy:false, genError:"", tweak:"",
-  histTab:"sessions", histEx:null, confirm:null, rest:null
+  histTab:"sessions", histEx:null, confirm:null
 };
 S.gen = {...S.settings.lastGen, acts:{}, note:""};
 const sortedSessions=()=>[...S.sessions].sort((a,b)=>(b.date||"").localeCompare(a.date||"")||(b.savedAt||0)-(a.savedAt||0));
@@ -487,9 +482,30 @@ document.addEventListener("submit",ev=>{if(ev.target.id==="authForm"){ev.prevent
 /* ---------------- Training logic ---------------- */
 function exHistory(name){
   const n=norm(name),out=[];
-  for(const s of sortedSessions()){const e=(s.exercises||[]).find(x=>norm(x.name)===n);if(e&&e.sets&&e.sets.some(t=>t.r>0))out.push({date:s.date,deload:!!s.deload,sets:e.sets.filter(t=>t.r>0)});}
+  for(const s of sortedSessions()){const e=(s.exercises||[]).find(x=>norm(x.name)===n);if(e&&e.sets&&e.sets.some(t=>t.r>0))out.push({id:s.id,savedAt:s.savedAt,date:s.date,deload:!!s.deload,sets:e.sets.filter(t=>t.r>0)});}
   return out;
 }
+// Personal records. Best results for an exercise in sessions before the given one
+// (earlier date, or same date and saved earlier). A set is a record if it is the heaviest weight
+// ever, a higher estimated 1RM (sets of 12 reps or fewer, where the formula is reliable), or,
+// for bodyweight work, more reps than ever.
+function bestBefore(name,date,id,savedAt){
+  const n=norm(name),b={any:false,maxW:0,maxE:0,maxR:0};
+  for(const s of S.sessions){
+    if(s.id===id) continue;
+    if(!(s.date<date||(s.date===date&&(s.savedAt||0)<(savedAt||Infinity)))) continue;
+    for(const e of s.exercises||[]){if(norm(e.name)!==n)continue;
+      for(const t of e.sets||[]){const w=num(t.w),r=num(t.r);if(!(r>0))continue;b.any=true;
+        if(w>b.maxW)b.maxW=w; if(w>0&&r<=12)b.maxE=Math.max(b.maxE,e1rm(w,r)); if(w===0)b.maxR=Math.max(b.maxR,r);}}
+  }
+  return b;
+}
+function isPR(t,b){
+  if(!b.any) return false; const w=num(t.w),r=num(t.r); if(!(r>0)) return false;
+  if(w>0) return w>b.maxW||(r<=12&&e1rm(w,r)>b.maxE+0.01);
+  return b.maxW===0&&r>b.maxR;
+}
+const sessPRs=s=>(s.exercises||[]).filter(e=>{const b=bestBefore(e.name,s.date,s.id,s.savedAt);return (e.sets||[]).some(t=>isPR(t,b));}).map(e=>e.name);
 // Double progression: hit the top of the rep range on every working set -> add one increment.
 function baselineFor(name){
   const n=norm(name), info=libFor(name), bwOk=info&&(info.type==="b"||info.type==="t");
@@ -592,7 +608,7 @@ ${actLines}
 
 TRAINEE
 - Priority: ${PRIORITY_RULE[pk]}
-- Weekly volume target: ${tLo}-${tHi} working sets per muscle per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle). Forearms, calves and core may sit at the low end unless the trainee asks otherwise.
+- Weekly volume target: ${tLo}-${tHi} working sets per muscle per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle).
 - Planned strength sessions per week: ${perWeek}. Sessions in the last 7 days: ${done7}.
 - Experience: ${st.experience}
 - Exercise style: ${STYLE_RULE[st.style]||STYLE_RULE.compound}
@@ -680,6 +696,12 @@ function newDraft(fromPlan){
   if(p) for(const e of p.exercises) d.exercises.push(makeEx(e.name,e.muscles||[e.muscle],e));
   S.draft=d;saveDraftSoon();
 }
+function draftFromSession(s){
+  const prof=S.settings.profiles.find(p=>p.name===s.where);
+  return {id:s.id,editing:true,date:s.date,startedAt:Date.now(),savedAt:s.savedAt||null,durationMin:s.durationMin??null,where:prof?prof.id:"",origWhere:s.where||"",energy:s.energy,planTitle:s.planTitle||"",deload:!!s.deload,note:s.note||"",
+    exercises:(s.exercises||[]).map(e=>{const mm=musclesOf(e);return {name:e.name,muscle:mm.primary[0],muscles:mm.primary,secondary:mm.secondary,target:{reps:"",weight:null,rir:null,restSec:90,note:""},
+      sets:(e.sets||[]).map(t=>({w:num(t.w)>0?String(t.w):"",r:String(t.r),rir:t.rir!=null?String(Math.min(3,t.rir)):"",done:true}))};})};
+}
 function makeEx(name,mains,target,secondary){
   const info=libFor(name); const hint=hintFor(name);
   const n=target?target.sets:(hint&&!hint.baseline?Math.min(6,exHistory(name)[0].sets.length):3);
@@ -694,25 +716,13 @@ function finishDraft(){
   const d=S.draft;
   const exercises=d.exercises.map(e=>{const mm=musclesOf(e);return {name:e.name,muscle:mm.primary[0],muscles:mm.primary,secondary:mm.secondary,sets:e.sets.filter(s=>num(s.r)>0).map(s=>{const o={w:num(s.w),r:Math.round(num(s.r))};if(s.rir!==""&&s.rir!=null)o.rir=Math.round(num(s.rir));return o;})};}).filter(e=>e.sets.length);
   if(!exercises.length){toast("Enter reps for at least one set before saving.");return;}
-  const mins=d.date===todayISO()?Math.round((Date.now()-d.startedAt)/60000):null;
-  const sess={id:d.id,date:d.date,where:profileByid(d.where).name,energy:d.energy,planTitle:d.planTitle||"",...(d.deload?{deload:true}:{}),note:d.note||"",durationMin:mins&&mins<300?mins:null,savedAt:Date.now(),exercises};
+  const mins=d.editing?d.durationMin:(d.date===todayISO()?Math.round((Date.now()-d.startedAt)/60000):null);
+  const where=d.where?profileByid(d.where).name:(d.origWhere||"");
+  const sess={id:d.id,date:d.date,where,energy:d.energy,planTitle:d.planTitle||"",...(d.deload?{deload:true}:{}),note:d.note||"",durationMin:mins&&mins<300?mins:null,savedAt:d.editing&&d.savedAt?d.savedAt:Date.now(),exercises};
   saveSession(sess);
-  S.draft=null;S.rest=null;saveDraftSoon();
-  S.tab="history";toast("Workout saved.");render();
-}
-
-/* ---------------- Rest timer ---------------- */
-let restI=null;
-function startRest(sec){S.rest={end:Date.now()+sec*1000,total:sec};if(!restI)restI=setInterval(tickRest,250);tickRest();}
-function tickRest(){
-  const el=$("#restbar");
-  if(!S.rest){el.innerHTML="";clearInterval(restI);restI=null;return;}
-  const left=Math.max(0,Math.round((S.rest.end-Date.now())/1000));
-  if(left===0&&!S.rest.doneAt){S.rest.doneAt=Date.now();try{navigator.vibrate&&navigator.vibrate([200,100,200]);}catch(e){}}
-  if(S.rest.doneAt&&Date.now()-S.rest.doneAt>4000){S.rest=null;el.innerHTML="";clearInterval(restI);restI=null;return;}
-  const pct=Math.min(100,100*(1-left/S.rest.total));
-  el.className="restbar";
-  el.innerHTML=`<div class="in" role="timer" aria-live="off"><span class="time">${left===0?"Go":`${Math.floor(left/60)}:${String(left%60).padStart(2,"0")}`}</span><div class="prog"><div style="width:${pct}%"></div></div><button data-a="rest-add">+15s</button><button data-a="rest-stop">Skip</button></div>`;
+  S.draft=null;saveDraftSoon();
+  const prs=sessPRs(sess).length;
+  S.tab="history";toast(`${d.editing?"Changes saved.":"Workout saved."}${prs?` ${prs} new record${prs===1?"":"s"}!`:""}`);render();
 }
 
 /* ---------------- Keep the screen on during a workout ----------------
@@ -720,7 +730,7 @@ function tickRest(){
 let wakeLock=null, wakeBusy=false;
 async function syncWakeLock(){
   if(!("wakeLock" in navigator)||wakeBusy) return;
-  const want=!!S.draft&&S.mode==="ready"&&document.visibilityState==="visible";
+  const want=!!S.draft&&!S.draft.editing&&S.mode==="ready"&&document.visibilityState==="visible";
   wakeBusy=true;
   try{
     if(want&&!wakeLock){wakeLock=await navigator.wakeLock.request("screen");wakeLock.addEventListener("release",()=>{wakeLock=null;});}
@@ -754,12 +764,29 @@ function render(){
   let h="";
   if(!navigator.onLine) h+=`<div class="banner">You're offline. Logging still works and will sync when you're back online.</div>`;
   else if(S.stale) h+=`<div class="banner">Couldn't reach your account just now. What you see may be out of date; your changes are kept on this phone.${S.lastErr?`<br><span class="small">Details: ${esc(S.lastErr)}</span>`:""}</div>`;
-  h+=({plan:viewPlan,log:viewLog,history:viewHistory,setup:viewSetup})[S.tab]();
+  h+=(S.tab==="plan"&&needsWelcome())?viewWelcome():({plan:viewPlan,log:viewLog,history:viewHistory,setup:viewSetup})[S.tab]();
   m.innerHTML=h; m.scrollTop=y;
   const r=$("#dur"); if(r) r.addEventListener("input",()=>{S.gen.dur=+r.value;$("#durOut").textContent=r.value+" min";});
 }
 function chip(label,on,a,v,extra=""){return `<button class="chip ${extra}" data-a="${a}" data-v="${esc(v)}" aria-pressed="${on?"true":"false"}">${esc(label)}</button>`;}
 
+// First-run screen: shown on the Plan tab until the person finishes or skips it, if they have no sessions yet.
+const needsWelcome=()=>S.mode==="ready"&&!S.firstPull&&!S.settings.onboarded&&!S.sessions.length&&!S.draft;
+function viewWelcome(){
+  const st=S.settings, pk=prioOf(st);
+  let h=`<section class="card"><h2>Welcome</h2><p style="margin:0">A few questions so your first plans fit you. Everything can be changed later in Setup.</p></section>
+  <section class="card"><h2>Your training</h2>
+  <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)}</p></div>
+  <div class="field"><p class="lbl">Strength sessions per week</p><div class="seg">${[1,2,3,4,5,6].map(n=>chip(String(n),(Math.round(num(st.perWeek))||3)===n,"per-week",n)).join("")}</div></div>
+  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${["beginner","intermediate","advanced"].map(x=>`<option value="${x}" ${st.experience===x?"selected":""}>${cap(x)}</option>`).join("")}</select></div></section>`;
+  h+=`<section class="card"><h2>Recent lifts <span class="muted small">(optional)</span></h2><p class="muted small" style="margin:0">For any lift you already do, enter a recent set you managed with good form, e.g. 80 kg × 5. Until you log the lift, the app starts you a little below it. Leave kg empty for bodyweight moves. For dumbbells, enter the weight of one dumbbell.</p>
+  <datalist id="libnames">${LIB.map(x=>`<option value="${esc(x.name)}"></option>`).join("")}</datalist>
+  ${(st.baselines||[]).map((b,i)=>`<div class="prof" style="gap:6px"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="bn-${i}">Lift</label><input type="text" id="bn-${i}" list="libnames" data-in="bl" data-f="name" data-i="${i}" value="${esc(b.name)}" placeholder="Lift" style="flex:1;min-width:0"><button class="btn ghost danger xbtn" data-a="bl-del" data-i="${i}" aria-label="Remove ${esc(b.name)}">✕</button></div>
+    <div class="row" style="flex-wrap:nowrap"><label class="sr" for="bw-${i}">Weight in kg</label><input type="text" inputmode="decimal" id="bw-${i}" data-in="bl" data-f="w" data-i="${i}" value="${esc(b.w)}" placeholder="kg" style="width:90px;text-align:center"><span class="muted">kg ×</span><label class="sr" for="br-${i}">Reps</label><input type="text" inputmode="numeric" id="br-${i}" data-in="bl" data-f="r" data-i="${i}" value="${esc(b.r)}" placeholder="reps" style="width:80px;text-align:center"><span class="muted small" id="blh-${i}" style="flex:1">${blText(b)}</span></div></div>`).join("")}
+  <button class="btn" data-a="bl-add" style="align-self:flex-start">Add a lift</button><p class="muted small" style="margin:0">You can also skip this: log a recent workout on the Log tab (set its date to the past) and the planner starts from that.</p></section>`;
+  h+=`<button class="btn primary block" data-a="welcome-done">Continue</button>`;
+  return h;
+}
 function viewPlan(){
   const g=S.gen, st=S.settings;
   let h=`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
@@ -778,7 +805,6 @@ function viewPlan(){
     : `<button class="btn primary block" data-a="generate">${S.plan?"Generate a new session":"Generate session"}</button>`;
   if(S.genError) h+=`<div class="banner" role="alert">${esc(S.genError)}</div>`;
   h+=`</section>`;
-  if(!S.sessions.length&&!(st.baselines||[]).some(b=>baselineFor(b.name))) h+=`<div class="callout">First time here? Add your <b>starting numbers</b> for a few lifts so the first plan uses sensible weights. <button class="btn" style="margin-top:8px" data-a="tab" data-v="setup">Add starting numbers</button></div>`;
   if(S.plan&&!S.genBusy) h+=viewPlanCard(S.plan);
   h+=viewWeek();
   return h;
@@ -802,8 +828,8 @@ function viewWeek(){
   const n=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   if(!S.sessions.length) return `<section class="card"><h2>Your week</h2><p class="muted" style="margin:0">After your first logged session, this shows the sets per muscle over the last 7 days. The generator uses it to fill the gaps.</p></section>`;
   return `<section class="card"><div class="row between"><h2>Last 7 days</h2><span class="muted small">${n} session${n===1?"":"s"}</span></div>
-  <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} sets"><div class="f ${v[m]<tLo&&m!=="forearms"?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small">${since[m]!==undefined&&v[m]===0?`(${since[m]}d)`:""}</span></span>`).join("")}</div>
-  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}); amber means below ${tLo}. Brackets show days since last trained.</p></section>`;
+  <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} sets"><div class="f ${v[m]<tLo?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small muted">${since[m]===undefined?"(never)":since[m]===0?"(today)":`(${since[m]}d)`}</span></span>`).join("")}</div>
+  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}); amber means below ${tLo}. Brackets show days since each muscle was last trained.</p></section>`;
 }
 
 function viewLog(){
@@ -812,14 +838,15 @@ function viewLog(){
     return `<section class="card"><h2>Log a workout</h2><div class="empty"><span>No workout in progress.</span>
       ${S.plan?`<button class="btn primary block" data-a="start-plan">Start "${esc(S.plan.title)}"</button>`:""}
       <button class="btn block" data-a="start-empty">Start an empty workout</button>
-      <span class="small">You can change the date afterwards to log a past session.</span></div></section>`;
+      <span class="small">You can change the date afterwards to log a past session. New lifts start from what you log, so logging a recent workout is the quickest way to give the planner your starting weights.</span></div></section>`;
   }
   const names=[...new Set([...S.sessions.flatMap(s=>(s.exercises||[]).map(e=>e.name)),...LIB.map(x=>x.name)])].sort();
-  let h=`<section class="card"><div class="row between"><h2>${esc(d.planTitle||"Workout")}</h2><span class="muted small" id="elapsed">${elapsed()}</span></div>
+  let h=`<section class="card"><div class="row between"><h2>${d.editing?"Editing: ":""}${esc(d.planTitle||"Workout")}</h2><span class="muted small" id="elapsed">${elapsed()}</span></div>
+  ${d.editing?`<p class="muted small" style="margin:0">You're changing a saved session. Tap <b>Save changes</b> at the bottom when done.</p>`:""}
   <div class="row" style="flex-wrap:nowrap"><div class="field" style="flex:1"><label class="lbl" for="ddate">Date</label><input type="date" id="ddate" data-in="d-date" value="${d.date}"></div>
-  <div class="field" style="flex:1"><label class="lbl" for="dwhere">Where</label><select id="dwhere" data-in="d-where">${S.settings.profiles.map(p=>`<option value="${p.id}" ${p.id===d.where?"selected":""}>${esc(p.name)}</option>`).join("")}</select></div></div></section>`;
+  <div class="field" style="flex:1"><label class="lbl" for="dwhere">Where</label><select id="dwhere" data-in="d-where">${d.where?"":`<option value="" selected>${esc(d.origWhere||"—")}</option>`}${S.settings.profiles.map(p=>`<option value="${p.id}" ${p.id===d.where?"selected":""}>${esc(p.name)}</option>`).join("")}</select></div></div></section>`;
   d.exercises.forEach((e,i)=>{
-    const hint=hintFor(e.name);
+    const hint=d.editing?null:hintFor(e.name), best=bestBefore(e.name,d.date,d.id,d.editing?d.savedAt:Infinity);
     h+=`<section class="ex" aria-label="${esc(e.name)}"><div class="ex-head"><div><b>${esc(e.name)}</b> ${mainTags(musclesOf(e).primary)}${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}</div>
       <div class="row" style="gap:4px;flex-wrap:nowrap"><button class="btn ghost" data-a="ex-up" data-i="${i}" aria-label="Move up" ${i===0?"disabled":""}>↑</button><button class="btn ghost danger" data-a="ex-del" data-i="${i}" aria-label="Remove ${esc(e.name)}" aria-expanded="${S.confirm==="exdel-"+i?"true":"false"}">✕</button></div></div>`;
     if(S.confirm==="exdel-"+i) h+=`<div class="inline-confirm" role="alertdialog" aria-label="Confirm removal"><span class="small">Remove ${esc(e.name)} from this workout?${e.sets.some(s=>num(s.r)>0)?" The sets you entered will be lost.":""}</span><button class="btn danger" data-a="ex-del-yes" data-i="${i}">Remove</button><button class="btn" data-a="confirm-no">Keep</button></div>`;
@@ -827,10 +854,10 @@ function viewLog(){
     const parts=[];
     if(hint) parts.push(hint.baseline?`Starting point: <strong>${esc(hint.lastText)}</strong>`:`Last (${fmtDate(hint.date)}): <strong>${esc(hint.lastText)}</strong>`);
     parts.push(`Target: <strong>${esc(tgt.reps||"")}${tgt.weight?` @ ${fmtKg(tgt.weight)} kg`:""}</strong>${tgt.rir!=null?`, ${rirText(tgt.rir)}`:""}`);
-    if(tgt.note) parts.push(esc(tgt.note)); else if(hint) parts.push(esc(hint.why));
-    h+=`<div class="hint ${hint&&hint.stalled?"stall":""}">${parts.join(" · ")}</div>
-    <table class="sets"><thead><tr><th scope="col">Set</th><th scope="col">${perHand(e.name)?"kg each":"kg"}</th><th scope="col">Reps</th><th scope="col"><abbr title="Reps in reserve: how many more reps you could have done (optional)">RIR</abbr></th><th scope="col"><span class="sr">Done</span></th></tr></thead><tbody>
-    ${e.sets.map((s,j)=>`<tr><td>${j+1}</td><td><input type="text" inputmode="decimal" id="w-${i}-${j}" aria-label="Set ${j+1} weight${perHand(e.name)?" per dumbbell":""}" data-in="set" data-f="w" data-i="${i}" data-j="${j}" value="${esc(s.w)}" placeholder="0"></td>
+    if(tgt.note) parts.push(esc(tgt.note)); else if(hint) parts.push(esc(hint.why)); else parts.push("First time: pick a weight you could lift for about 2 more reps");
+    if(!d.editing) h+=`<div class="hint ${hint&&hint.stalled?"stall":""}">${parts.join(" · ")}</div>`;
+    h+=`<table class="sets"><thead><tr><th scope="col">Set</th><th scope="col">${perHand(e.name)?"kg each":"kg"}</th><th scope="col">Reps</th><th scope="col"><abbr title="Reps in reserve: how many more reps you could have done (optional)">RIR</abbr></th><th scope="col"><span class="sr">Done</span></th></tr></thead><tbody>
+    ${e.sets.map((s,j)=>`<tr><td>${j+1}<span id="pr-${i}-${j}">${isPR(s,best)?`<span class="pr" title="Personal record">PR</span>`:""}</span></td><td><input type="text" inputmode="decimal" id="w-${i}-${j}" aria-label="Set ${j+1} weight${perHand(e.name)?" per dumbbell":""}" data-in="set" data-f="w" data-i="${i}" data-j="${j}" value="${esc(s.w)}" placeholder="0"></td>
       <td><input type="text" inputmode="numeric" id="r-${i}-${j}" aria-label="Set ${j+1} reps" data-in="set" data-f="r" data-i="${i}" data-j="${j}" value="${esc(s.r)}" placeholder="${esc(String(tgt.reps||"").split(/[–-]/)[0])}"></td>
       <td><select class="rir" id="q-${i}-${j}" aria-label="Set ${j+1} reps in reserve (optional)" data-in="set" data-f="rir" data-i="${i}" data-j="${j}">${[["","–"],["0","0"],["1","1"],["2","2"],["3","3+"]].map(([v,l])=>`<option value="${v}" ${String(s.rir??"")===v?"selected":""}>${l}</option>`).join("")}</select></td>
       <td><button class="check" data-a="set-done" data-i="${i}" data-j="${j}" aria-pressed="${s.done?"true":"false"}" aria-label="Mark set ${j+1} done">${ICONS.check}</button></td></tr>`).join("")}
@@ -843,14 +870,14 @@ function viewLog(){
     <div class="field"><p class="lbl">Also works</p><div class="seg" id="addSec">${addSecChips()}</div></div>
     <button class="btn" data-a="ex-add">Add to workout</button></section>
   <section class="card"><div class="field"><label class="lbl" for="dnote">Notes</label><textarea id="dnote" data-in="d-note" placeholder="How it went, anything to remember next time">${esc(d.note)}</textarea></div>
-    <button class="btn primary block" data-a="finish">Finish and save</button>
-    ${S.confirm==="discard"?`<div class="inline-confirm"><span>Discard this workout? Nothing will be saved.</span><button class="btn danger" data-a="discard-yes">Discard</button><button class="btn" data-a="confirm-no">Keep</button></div>`:`<button class="btn ghost danger" data-a="discard">Discard workout</button>`}
+    <button class="btn primary block" data-a="finish">${d.editing?"Save changes":"Finish and save"}</button>
+    ${S.confirm==="discard"?`<div class="inline-confirm"><span>${d.editing?"Stop editing? Your changes won't be saved; the session stays as it was.":"Discard this workout? Nothing will be saved."}</span><button class="btn danger" data-a="discard-yes">${d.editing?"Stop editing":"Discard"}</button><button class="btn" data-a="confirm-no">Keep</button></div>`:`<button class="btn ghost danger" data-a="discard">${d.editing?"Cancel editing":"Discard workout"}</button>`}
   </section>`;
   return h;
 }
 function addMainChips(){return MUSCLES.map(m=>chip(cap(m),(S.addMains||[]).includes(m),"add-main",m,"sm")).join("");}
 function addSecChips(){return MUSCLES.filter(m=>!(S.addMains||[]).includes(m)).map(m=>chip(cap(m),(S.addSec||[]).includes(m),"add-sec",m,"sm")).join("");}
-function elapsed(){const d=S.draft;if(!d||d.date!==todayISO())return "";const m=Math.round((Date.now()-d.startedAt)/60000);return m<300?`${m} min`:"";}
+function elapsed(){const d=S.draft;if(!d||d.editing||d.date!==todayISO())return "";const m=Math.round((Date.now()-d.startedAt)/60000);return m<300?`${m} min`:"";}
 
 function viewHistory(){
   let h=`<div class="seg" role="tablist">${chip("Sessions",S.histTab==="sessions","hist-tab","sessions")}${chip("Exercises",S.histTab==="exercises","hist-tab","exercises")}</div>`;
@@ -860,9 +887,9 @@ function viewHistory(){
       const sets=(s.exercises||[]).reduce((a,e)=>a+e.sets.length,0);
       const vol=(s.exercises||[]).reduce((a,e)=>a+e.sets.reduce((b,t)=>b+num(t.w)*t.r,0),0);
       return `<details class="sess" data-sid="${esc(s.id)}" ${S.openSess&&S.openSess.has(s.id)?"open":""}><summary><span><b>${fmtDate(s.date)}</b><br><span class="muted small">${esc(s.planTitle||s.where||"")}</span></span><span class="kv small muted" style="text-align:right">${(s.exercises||[]).length} exercises · ${sets} sets<br>${Math.round(vol).toLocaleString()} kg moved${s.durationMin?` · ${s.durationMin} min`:""}</span></summary>
-        ${(s.exercises||[]).map(e=>`<div class="row between small"><span>${esc(e.name)}</span><span class="kv">${esc(fmtSets(e.sets))}</span></div>`).join("")}
+        ${(prs=>(s.exercises||[]).map(e=>`<div class="row between small"><span>${esc(e.name)}${prs.includes(e.name)?`<span class="pr" title="Personal record">PR</span>`:""}</span><span class="kv">${esc(fmtSets(e.sets))}</span></div>`).join(""))(sessPRs(s))}
         ${s.note?`<div class="muted small">${esc(s.note)}</div>`:""}
-        ${S.confirm==="del-"+s.id?`<div class="inline-confirm"><span class="small">Delete this session for good?</span><button class="btn danger" data-a="sess-del-yes" data-v="${s.id}">Delete</button><button class="btn" data-a="confirm-no">Keep</button></div>`:`<div><button class="btn ghost danger" data-a="sess-del" data-v="${s.id}">Delete session</button></div>`}
+        ${S.confirm==="del-"+s.id?`<div class="inline-confirm"><span class="small">Delete this session for good?</span><button class="btn danger" data-a="sess-del-yes" data-v="${s.id}">Delete</button><button class="btn" data-a="confirm-no">Keep</button></div>`:`<div class="row"><button class="btn" data-a="sess-edit" data-v="${s.id}">Edit</button><button class="btn ghost danger" data-a="sess-del" data-v="${s.id}">Delete session</button></div>`}
       </details>`;}).join("")}</section>`;
     return h;
   }
@@ -892,7 +919,7 @@ function viewExercise(name){
   return `<section class="card"><button class="btn ghost" data-a="hist-back" style="align-self:flex-start">← All exercises</button><h2>${esc(name)}</h2>
     ${hint?`<div class="hint ${hint.stalled?"stall":""}">Next time: <strong>${hint.next.w>0?fmtKg(hint.next.w)+" kg × ":""}${esc(hint.next.reps)}</strong> · ${esc(hint.why)}</div>`:""}
     ${chart}
-    <div>${exHistory(name).slice(0,12).map(x=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${fmtDate(x.date)}</span><span class="kv">${esc(fmtSets(x.sets))}</span></div>`).join("")}</div></section>`;
+    <div>${exHistory(name).slice(0,12).map(x=>`<div class="row between small" style="padding:6px 0;border-top:1px solid var(--line)"><span>${fmtDate(x.date)}${(b=>x.sets.some(t=>isPR(t,b)))(bestBefore(name,x.date,x.id,x.savedAt))?`<span class="pr" title="Personal record">PR</span>`:""}</span><span class="kv">${esc(fmtSets(x.sets))}</span></div>`).join("")}</div></section>`;
 }
 
 function blText(b){if(!b||!b.name||!(num(b.r)>0))return "";if(!libFor(b.name)&&!(num(b.w)>0))return "";const h=baselineHint(b.name);if(!h)return "";return `→ start at ${h.next.w>0?fmtKg(h.next.w)+" kg × ":""}${h.next.reps}`;}
@@ -903,11 +930,6 @@ function viewSetup(){
   ${st.profiles.map((p,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="pn-${i}">Location name</label><input type="text" id="pn-${i}" data-in="prof-name" data-i="${i}" value="${esc(p.name)}">${st.profiles.length>1?`<button class="btn ghost danger xbtn" data-a="prof-del" data-i="${i}" aria-label="Delete ${esc(p.name)}">✕</button>`:""}</div>
     <div class="seg">${Object.entries(EQUIP).map(([k,l])=>chip(l,p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div></div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
-  h+=`<section class="card"><h2>Starting numbers</h2><p class="muted small" style="margin:0">For each lift, enter a recent set you managed with good form, e.g. 80 kg × 5. Until you log the lift, the app starts you a little below it. Leave kg empty for bodyweight moves. For dumbbells, enter the weight of one dumbbell.</p>
-  <datalist id="libnames">${LIB.map(x=>`<option value="${esc(x.name)}"></option>`).join("")}</datalist>
-  ${(st.baselines||[]).map((b,i)=>`<div class="prof" style="gap:6px"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="bn-${i}">Lift</label><input type="text" id="bn-${i}" list="libnames" data-in="bl" data-f="name" data-i="${i}" value="${esc(b.name)}" placeholder="Lift" style="flex:1;min-width:0"><button class="btn ghost danger xbtn" data-a="bl-del" data-i="${i}" aria-label="Remove ${esc(b.name)}">✕</button></div>
-    <div class="row" style="flex-wrap:nowrap"><label class="sr" for="bw-${i}">Weight in kg</label><input type="text" inputmode="decimal" id="bw-${i}" data-in="bl" data-f="w" data-i="${i}" value="${esc(b.w)}" placeholder="kg" style="width:90px;text-align:center"><span class="muted">kg ×</span><label class="sr" for="br-${i}">Reps</label><input type="text" inputmode="numeric" id="br-${i}" data-in="bl" data-f="r" data-i="${i}" value="${esc(b.r)}" placeholder="reps" style="width:80px;text-align:center"><span class="muted small" id="blh-${i}" style="flex:1">${blText(b)}</span></div></div>`).join("")}
-  <div class="row"><button class="btn" data-a="bl-add">Add a lift</button><button class="btn primary" data-a="settings-save">Save starting numbers</button></div></section>`;
   h+=`<section class="card"><h2>Other activities</h2><p class="muted small" style="margin:0">Choose the muscles to keep fresh for each one. On the Plan tab, mark an activity as "Coming up" and the generator won't train those muscles.</p>
   ${st.activities.map((a,i)=>`<div class="prof"><div class="row" style="flex-wrap:nowrap"><label class="sr" for="an-${i}">Activity name</label><input type="text" id="an-${i}" data-in="act-name" data-i="${i}" value="${esc(a.name)}"><button class="btn ghost danger xbtn" data-a="act-del" data-i="${i}" aria-label="Delete ${esc(a.name)}">✕</button></div>
     <div class="seg">${MUSCLES.map(m=>chip(cap(m),a.spare.includes(m),"act-m",i+"|"+m,"sm")).join("")}</div></div>`).join("")}
@@ -949,7 +971,7 @@ document.addEventListener("click",async ev=>{
     case "plan-clear": S.plan=null;savePlan();break;
     case "start-plan": if(S.draft&&S.draft.exercises.length){toast("Finish or discard the workout in progress first.");S.tab="log";break;} newDraft(true);S.tab="log";render();$("#main").scrollTop=0;return;
     case "start-empty": newDraft(false);break;
-    case "set-done": {const s=d.exercises[i].sets[j];if(!s.done&&!(num(s.r)>0)){const ph=String(d.exercises[i].target?.reps||"").match(/\d+/);if(ph)s.r=ph[0];}s.done=!s.done;saveDraftSoon();if(s.done)startRest(d.exercises[i].target?.restSec||90);break;}
+    case "set-done": {const s=d.exercises[i].sets[j];if(!s.done&&!(num(s.r)>0)){const ph=String(d.exercises[i].target?.reps||"").match(/\d+/);if(ph)s.r=ph[0];}s.done=!s.done;saveDraftSoon();break;}
     case "set-add": {const ss=d.exercises[i].sets;const last=ss[ss.length-1]||{w:"",r:""};ss.push({w:last.w,r:"",done:false});saveDraftSoon();break;}
     case "set-del": d.exercises[i].sets.pop();saveDraftSoon();break;
     case "ex-del": S.confirm=S.confirm==="exdel-"+i?null:"exdel-"+i;break;
@@ -960,14 +982,13 @@ document.addEventListener("click",async ev=>{
     case "ex-add": {const name=$("#addName").value.trim();if(!name){toast("Type an exercise name.");return;}const info=libFor(name);const mains=cleanMains(S.addMains);if(!mains.length){toast("Pick at least one main muscle.");return;}S.confirm=null;d.exercises.push(makeEx(info?info.name:name,mains,null,(S.addSec||[]).filter(m=>!mains.includes(m))));S.addName="";S.addMains=[];S.addSec=[];saveDraftSoon();render();const last=document.querySelectorAll(".ex");last[last.length-1]?.scrollIntoView({block:"start",behavior:"smooth"});return;}
     case "finish": finishDraft();return;
     case "discard": S.confirm="discard";break;
-    case "discard-yes": S.draft=null;S.rest=null;S.confirm=null;saveDraftSoon();break;
+    case "discard-yes": S.draft=null;S.confirm=null;saveDraftSoon();break;
     case "confirm-no": S.confirm=null;break;
-    case "rest-add": if(S.rest){S.rest.end+=15000;S.rest.total+=15;S.rest.doneAt=null;}tickRest();return;
-    case "rest-stop": S.rest=null;tickRest();return;
     case "hist-tab": S.histTab=v;S.histEx=null;break;
     case "hist-ex": S.histEx=v;render();$("#main").scrollTop=0;return;
     case "hist-back": S.histEx=null;break;
     case "sess-del": S.confirm="del-"+v;break;
+    case "sess-edit": {if(S.draft&&S.draft.exercises.length){toast(S.draft.editing?"Save or cancel the session you're editing first.":"Finish or discard the workout in progress first.");S.tab="log";break;}const s=S.sessions.find(x=>x.id===v);if(!s)break;S.draft=draftFromSession(s);saveDraftSoon();S.confirm=null;S.tab="log";render();$("#main").scrollTop=0;return;}
     case "sess-del-yes": deleteSession(v);S.confirm=null;toast("Session deleted.");break;
     case "prof-eq": {const [pi,k]=v.split("|");const p=st.profiles[+pi];p.eq=p.eq.includes(k)?p.eq.filter(x=>x!==k):[...p.eq,k];saveSettings();break;}
     case "prof-add": st.profiles.push({id:uid(),name:"New location",eq:["dumbbell"]});saveSettings();break;
@@ -977,6 +998,7 @@ document.addEventListener("click",async ev=>{
     case "auth-mode": S.authMode=v;S.authMsg="";const em=$("#authEmail");if(em)S.authEmail=em.value;break;
     case "signout": {if(queue().length&&S.confirm!=="signout"){S.confirm="signout";break;}S.confirm=null;await sb.auth.signOut();setUser(null);return;}
     case "style": st.style=v;saveSettings();break;
+    case "welcome-done": st.baselines=(st.baselines||[]).filter(b=>b.name&&num(b.r)>0);st.onboarded=true;await saveSettings();flush();$("#main").scrollTop=0;break;
     case "priority": st.priority=PRIORITIES[v]?v:"both";saveSettings();break;
     case "per-week": st.perWeek=Math.max(1,Math.min(7,+v||3));saveSettings();break;
     case "bl-add": st.baselines.push({name:"",w:"",r:""});saveSettings();break;
@@ -993,7 +1015,8 @@ document.addEventListener("input",ev=>{
   switch(k){
     case "gen-note": S.gen.note=t.value;break;
     case "tweak": S.tweak=t.value;break;
-    case "set": d.exercises[+t.dataset.i].sets[+t.dataset.j][t.dataset.f]=t.dataset.f==="rir"?(/^[0-3]$/.test(t.value)?t.value:""):t.value.replace(/[^0-9.,]/g,"");saveDraftSoon();break;
+    case "set": {const ex=d.exercises[+t.dataset.i], st0=ex.sets[+t.dataset.j];st0[t.dataset.f]=t.dataset.f==="rir"?(/^[0-3]$/.test(t.value)?t.value:""):t.value.replace(/[^0-9.,]/g,"");saveDraftSoon();
+      const el=$(`#pr-${t.dataset.i}-${t.dataset.j}`);if(el)el.innerHTML=isPR(st0,bestBefore(ex.name,d.date,d.id,d.editing?d.savedAt:Infinity))?`<span class="pr" title="Personal record">PR</span>`:"";break;}
     case "d-date": d.date=t.value||todayISO();saveDraftSoon();break;
     case "d-where": d.where=t.value;saveDraftSoon();break;
     case "d-note": d.note=t.value;saveDraftSoon();break;
