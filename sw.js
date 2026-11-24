@@ -1,5 +1,5 @@
 // Offline support. Bump VERSION whenever you change files, so phones pick up the new version.
-const VERSION = "wl-v7";
+const VERSION = "wl-v8";
 const SHELL = [
   "./", "./index.html", "./config.js", "./manifest.webmanifest",
   "./vendor/supabase.js", "./vendor/591.supabase.js",
@@ -7,7 +7,9 @@ const SHELL = [
 ];
 
 self.addEventListener("install", e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: "reload" skips the browser's HTTP cache (GitHub Pages allows 10 minutes), so a new
+  // version never stores stale copies of the previous files.
+  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL.map(u => new Request(u, {cache: "reload"})))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", e => {
@@ -27,7 +29,10 @@ self.addEventListener("fetch", e => {
   // Pages and code: try the network first so updates arrive, fall back to the cache offline.
   if (sameOrigin && (req.mode === "navigate" || /\.(html|js|webmanifest)$/.test(url.pathname) || url.pathname.endsWith("/"))) {
     e.respondWith(
-      fetch(req).then(res => {
+      // "no-cache": always ask the server (cheap if unchanged), never reuse a stale HTTP-cached copy.
+      // A navigation Request can't be copied with options, so fetch by URL.
+      fetch(req.url, {cache: "no-cache", credentials: "same-origin"}).then(res => {
+        if (res.redirected) return Response.redirect(res.url, 302); // e.g. /workout-log -> /workout-log/
         const copy = res.clone();
         caches.open(VERSION).then(c => c.put(req, copy));
         return res;
