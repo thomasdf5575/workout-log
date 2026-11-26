@@ -799,15 +799,17 @@ async function loadGarmin(){
 async function garminSync(force){
   const g=S.garmin;
   if(!garminOn()||!sb||!user||!navigator.onLine||g.busy) return;
-  if(!force&&Date.now()-Math.max(g.syncAt||0,g.tryAt||0)<15*60000) return;
+  const quick=force==="quick"; if(quick) force=false;
+  if(!quick&&!force&&Date.now()-Math.max(g.syncAt||0,g.tryAt||0)<15*60000) return;
+  if(quick&&Date.now()-(g.tryAt||0)<60000) return;
   g.busy=true;g.tryAt=Date.now();softRender();
   try{
-    const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:force||!g.syncAt?28:7}});
+    const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:quick?3:force||!g.syncAt?28:7}});
     if(error){let code="sync_failed";try{if(error.context&&error.context.status===404)code="not_deployed";const b=await error.context.json();code=b.error||code;}catch(e){}throw new Error(code);}
     g.syncAt=Date.now();g.profile=data.profile||g.profile;g.counts={days:data.days,activities:data.activities};
     const missing=Object.keys(data.errors||{});
     g.status=missing.length?`Synced, but Garmin didn't return: ${missing.join(", ")}.`:"";
-    await loadGarmin();
+    await loadGarmin(); autoLink();
   }catch(e){console.error(e);g.status=GARMIN_ERR[e.message]||"Couldn't reach Garmin. The app works as usual without it.";}
   finally{g.busy=false;saveGarminCache();softRender();}
 }
@@ -910,6 +912,91 @@ function checkinPrompt(){
   return lines.length?`\n- Check-in answers today: ${lines.join("; ")}.`:"";
 }
 
+/* Linking watch activities to logged sessions (rules L1-L6, Q5).
+   L1 Strength → strength part (from workout start), Cardio/HIIT → WOD part (from the WOD clock).
+   L2 same date, start within 15 min.  L3 a hybrid can link both.  L4 a hybrid with only one
+   activity links it to the whole session.  L5 one match links automatically, several or none
+   → the session offers a picker; auto-linking keeps trying for 24 h.  L6 WOD heart rate goes to the AI. */
+const isStrengthAct=a=>/strength/.test(String(a.type||"").toLowerCase());
+const isWodAct=a=>/cardio|hiit/.test(String(a.type||"").toLowerCase());
+const actMs=a=>Date.parse(a.start)||0;
+function actSnap(a){const o={id:a.id,type:a.type,name:a.name||"",start:a.start};["sec","avgHr","maxHr","kcal","te","teAn","zones"].forEach(f=>{if(a[f]!=null)o[f]=a[f];});return o;}
+function linkedIds(){const ids=new Set();for(const x of S.sessions){const g=x.garmin||{};["strength","wod","whole"].forEach(p=>{if(g[p])ids.add(g[p].id);});}return ids;}
+const isHybrid=x=>!!(x.wod&&(x.exercises||[]).length);
+function sessParts(x){
+  const t0=x.t0||null, w0=x.wodStart||null;
+  if(isHybrid(x)) return [{part:"strength",start:t0,fit:isStrengthAct},{part:"wod",start:w0||t0,fit:isWodAct}];
+  return x.wod?[{part:"wod",start:w0||t0,fit:isWodAct}]:[{part:"strength",start:t0,fit:isStrengthAct}];
+}
+// Candidate activities for each part (unlinked, same date, within 15 min of the part's start).
+function linkCands(x){
+  const taken=linkedIds(), acts=(S.garmin.acts||[]).filter(a=>actDate(a)===x.date&&!taken.has(a.id));
+  return sessParts(x).map(p=>({...p,cands:p.start?acts.filter(a=>p.fit(a)&&Math.abs(actMs(a)-p.start)<=15*60000):[]}));
+}
+function autoLink(){
+  if(!garminOn()) return; let changed=false;
+  for(const x of S.sessions){
+    if(!x.t0||Date.now()-(x.savedAt||0)>24*3600000) continue;
+    const g=x.garmin||{}; if(g.strength&&g.wod) continue; if(!isHybrid(x)&&(g.strength||g.wod||g.whole)) continue;
+    const parts=linkCands(x); let ng=null;
+    if(parts.some(p=>p.cands.length>1)) continue; // several matches: the session offers a picker
+    if(!isHybrid(x)){const a=parts[0].cands[0];if(a)ng={[parts[0].part]:actSnap(a)};}
+    else{
+      let sa=parts[0].cands[0]?actSnap(parts[0].cands[0]):null, wa=parts[1].cands[0]?actSnap(parts[1].cands[0]):null;
+      if(g.whole){if(isWodAct(g.whole))wa=g.whole;else sa=g.whole;}
+      if(!sa&&!wa&&!g.whole){ // L4: one activity of either type started with the workout
+        const taken=linkedIds(), any=(S.garmin.acts||[]).filter(a=>actDate(a)===x.date&&!taken.has(a.id)&&(isStrengthAct(a)||isWodAct(a))&&Math.abs(actMs(a)-x.t0)<=15*60000);
+        if(any.length===1) ng={whole:actSnap(any[0])};
+      }
+      else if(sa&&wa) ng={strength:sa,wod:wa};
+      else if(!g.whole) ng={whole:sa||wa};
+    }
+    if(ng){x.garmin=ng;saveSession(x);changed=true;}
+  }
+  if(changed) softRender();
+}
+// Manual picker: activities on that date not linked elsewhere.
+function pickCands(x){const taken=linkedIds();return (S.garmin.acts||[]).filter(a=>actDate(a)===x.date&&!taken.has(a.id)).sort((a,b)=>actMs(a)-actMs(b));}
+function linkManual(x,a){
+  const g={...(x.garmin||{})};
+  if(!isHybrid(x)) {x.garmin={[x.wod?"wod":"strength"]:actSnap(a)};}
+  else{
+    if(g.whole){const w=g.whole;delete g.whole;if(isStrengthAct(w)||!isWodAct(w))g.strength=w;else g.wod=w;}
+    const part=isWodAct(a)?(g.wod?"strength":"wod"):(g.strength?"wod":"strength");
+    g[part]=actSnap(a);
+    x.garmin=(g.strength&&g.wod)?g:{whole:g.strength||g.wod};
+  }
+  saveSession(x);
+}
+function snapText(a){return [durText(a.sec),a.avgHr?`avg HR ${a.avgHr}`:"",a.maxHr?`max ${a.maxHr}`:"",a.kcal?`${a.kcal} kcal`:"",a.te?`TE ${Number(a.te).toFixed(1)}`:""].filter(Boolean).join(" · ");}
+function viewSessGarmin(x){
+  if(!garminOn()) return "";
+  const g=x.garmin||{}, parts=[["strength","Strength"],["wod","WOD"],["whole","Watch"]].filter(([k])=>g[k]);
+  let h="";
+  if(parts.length){
+    h+=parts.map(([k,l])=>`<div class="row between small" style="flex-wrap:nowrap"><span style="flex:1">⌚ ${l}: ${esc(snapText(g[k]))}</span><button class="btn ghost xbtn" data-a="glink-del" data-v="${esc(x.id)}|${k}" aria-label="Unlink ${l} activity">✕</button></div>`).join("");
+    if(g.strength&&g.wod) h+=`<div class="muted small">Total: ${durText((g.strength.sec||0)+(g.wod.sec||0))} · ${(g.strength.kcal||0)+(g.wod.kcal||0)} kcal</div>`;
+  }
+  const full=g.strength&&g.wod||(!isHybrid(x)&&parts.length);
+  if(!full&&daysBetween(x.date,todayISO())<=34){
+    if(S.linkPick===x.id){const c=pickCands(x);
+      h+=c.length?`<div class="small">Which watch activity?<div class="row" style="margin-top:6px">${c.map(a=>`<button class="btn" data-a="glink" data-v="${esc(x.id)}|${a.id}">${esc((a.startLocal||"").slice(11,16))} ${esc(a.name||a.type)} · ${durText(a.sec)}</button>`).join("")}<button class="btn ghost" data-a="glink-cancel">Cancel</button></div></div>`
+        :`<div class="muted small">No watch activities found for this day yet. They can take a few minutes to arrive after the watch syncs. <button class="btn ghost" data-a="glink-cancel">OK</button></div>`;}
+    else h+=`<button class="btn ghost" data-a="glink-open" data-v="${esc(x.id)}" style="align-self:flex-start">⌚ ${linkCands(x).some(p=>p.cands.length>1)?"Several watch activities match: choose one":"Link Garmin activity"}</button>`;
+  }
+  return h;
+}
+// L6: WOD heart rate for the AI.
+function wodHrText(x){const a=(x.garmin||{}).wod||((x.garmin||{}).whole&&x.wod?(x.garmin||{}).whole:null);if(!a||!a.avgHr)return "";
+  const by=personalVal("birthYear"), mx=by?Math.round(208-0.7*(new Date().getFullYear()-by.v)):null;
+  return `, avg HR ${a.avgHr}${a.maxHr?` / max ${a.maxHr}`:""}${mx?` (${Math.round(100*a.avgHr/mx)}% of est. max)`:""}`;}
+// Q5: watch Strength/Cardio/HIIT of 20+ min in the last 3 days that isn't linked to any session.
+function unloggedActs(){
+  if(!garminOn()) return []; const taken=linkedIds(), skip=new Set(ls.get(k("q5skip"))||[]), from=addDays(todayISO(),-2);
+  return (S.garmin.acts||[]).filter(a=>(isStrengthAct(a)||isWodAct(a))&&actMin(a)>=20&&actDate(a)>=from&&!taken.has(a.id)&&!skip.has(a.id)
+    &&!S.sessions.some(x=>x.date===actDate(a)&&(!x.t0&&!x.garmin||linkCands(x).some(p=>p.cands.some(c=>c.id===a.id))))); // older sessions without timing, or a likely match for a logged session: don't ask
+}
+
 /* Personal info: weight (latest of manual and Garmin wins), height and age. */
 function weightPoints(){
   const pts=((S.settings.personal||{}).weights||[]).map(w=>({date:w.date,kg:num(w.kg),src:"you"})).filter(w=>w.kg>0);
@@ -973,7 +1060,7 @@ The trainee chose 100% conditioning: "exercises" MUST be an empty list. No stren
   const wodFormats=`"wod.format" is one of: "fortime" (do "rounds" rounds of the movement list as fast as possible, "minutes" = time cap, about 1.5x the expected time), "amrap" (as many rounds as possible in "minutes"), "emom" (every minute on the minute for "minutes" minutes; minute 1 does movement 1, minute 2 movement 2, and so on, cycling; each minute's work should take 30-45 s), "intervals" ("rounds" rounds of "workSec" work and "restSec" rest; interval 1 does movement 1, interval 2 movement 2, cycling), "chipper" (the list once, top to bottom, for time; "minutes" = cap). "unit" is one of: reps, cal, m, s. Every movement needs "scaled": a lighter load, fewer reps or the easier version that keeps the same time and stimulus.`;
   const sexTxt=st.sex==="male"?"male":st.sex==="female"?"female":"not given";
   const condMoves=availableExercises(prof).filter(x=>x.use!=="s").map(x=>`${x.name} (${x.muscles.join("/")}; ${x.pattern}${x.unit!=="reps"?"; "+x.unit:""}${x.skill!=="basic"?"; "+x.skill:""}${x.easier?"; easier: "+x.easier:""})`).join("; ");
-  const recentWod=sortedSessions().filter(s=>s.wod&&daysBetween(s.date,todayISO())<=10).slice(0,6).map(s=>`- ${s.date}: ${wodTitle(s.wod)}: ${(s.wod.movements||[]).map(m=>m.name).join(", ")}${s.score?` (score ${scoreText(s)})`:""}`).join("\n")||"- none";
+  const recentWod=sortedSessions().filter(s=>s.wod&&daysBetween(s.date,todayISO())<=10).slice(0,6).map(s=>`- ${s.date}: ${wodTitle(s.wod)}: ${(s.wod.movements||[]).map(m=>m.name).join(", ")}${s.score?` (score ${scoreText(s)}${wodHrText(s)})`:wodHrText(s)?` (${wodHrText(s).slice(2)})`:""}`).join("\n")||"- none";
   return `${head}
 "muscles" lists the 1-3 MAIN muscles: prime movers that are substantially loaded and limit the set. "secondary" lists other muscles meaningfully worked. All must be from: ${MUSCLES.join(", ")}. "rir" is the target reps in reserve for the working sets (0-4). "deload" is true only for a deliberately lighter session (see DELOADS). "weight" is kg: PER DUMBBELL/KETTLEBELL (one hand) for two-handed dumbbell or kettlebell lifts, the single implement for goblet squats and swings, the total bar load for barbells, the stack setting for machines and cables; or null for bodyweight or when unknown. For timed holds use reps like "40s".${what!=="strength"?"\n"+wodFormats:""}
 
@@ -1121,7 +1208,8 @@ function newDraft(fromPlan){
 }
 function draftFromSession(s){
   const prof=S.settings.profiles.find(p=>p.name===s.where);
-  return {id:s.id,editing:true,date:s.date,startedAt:Date.now(),savedAt:s.savedAt||null,durationMin:s.durationMin??null,where:prof?prof.id:"",origWhere:s.where||"",energy:s.energy,planTitle:s.planTitle||"",deload:!!s.deload,note:s.note||"",
+  const keep={};["t0","wodStart","wodEnd","garmin","fromWatch"].forEach(f=>{if(s[f]!=null)keep[f]=clone(s[f]);});
+  return {id:s.id,editing:true,keep,date:s.date,startedAt:Date.now(),savedAt:s.savedAt||null,durationMin:s.durationMin??null,where:prof?prof.id:"",origWhere:s.where||"",energy:s.energy,planTitle:s.planTitle||"",deload:!!s.deload,note:s.note||"",
     ...(s.wod?{kind:s.kind||"conditioning",wod:clone(s.wod),clock:{start:null,rounds:0,ended:true},score:{time:null,rounds:"",reps:"",capped:false,...clone(s.score||{})},rx:s.rx!==false,effort:s.effort??null}:{}),
     exercises:(s.exercises||[]).map(e=>{const mm=musclesOf(e);return {name:e.name,muscle:mm.primary[0],muscles:mm.primary,secondary:mm.secondary,target:{reps:"",weight:null,rir:null,restSec:90,note:""},
       sets:(e.sets||[]).map(t=>({w:num(t.w)>0?String(t.w):"",r:String(t.r),rir:t.rir!=null?String(Math.min(3,t.rir)):"",done:true}))};})};
@@ -1144,9 +1232,11 @@ function finishDraft(){
   else if(!exercises.length){toast("Enter reps for at least one set before saving.");return;}
   const mins=d.editing?d.durationMin:(d.date===todayISO()?Math.round((Date.now()-d.startedAt)/60000):null);
   const where=d.where?profileByid(d.where).name:(d.origWhere||"");
-  const sess={id:d.id,date:d.date,where,energy:d.energy,planTitle:d.planTitle||"",...(d.deload?{deload:true}:{}),...(d.wod?{kind:d.kind||"conditioning",wod:d.wod,score:{time:d.score.time||null,rounds:d.score.rounds===""?null:num(d.score.rounds),reps:num(d.score.reps)||0,capped:!!d.score.capped},rx:d.rx!==false,effort:d.effort||null}:{}),note:d.note||"",durationMin:mins&&mins<300?mins:null,savedAt:d.editing&&d.savedAt?d.savedAt:Date.now(),exercises};
+  const sess={id:d.id,date:d.date,where,energy:d.energy,planTitle:d.planTitle||"",...(d.deload?{deload:true}:{}),...(d.wod?{kind:d.kind||"conditioning",wod:d.wod,score:{time:d.score.time||null,rounds:d.score.rounds===""?null:num(d.score.rounds),reps:num(d.score.reps)||0,capped:!!d.score.capped},rx:d.rx!==false,effort:d.effort||null}:{}),note:d.note||"",durationMin:mins&&mins<300?mins:null,savedAt:d.editing&&d.savedAt?d.savedAt:Date.now(),exercises,
+    ...(d.editing?(d.keep||{}):{t0:d.startedAt||null,...(d.clock&&d.clock.start?{wodStart:d.clock.start+LEAD*1000,...(d.clock.doneAt!=null?{wodEnd:d.clock.start+LEAD*1000+Math.round(d.clock.doneAt*1000)}:{})}:{})})};
   saveSession(sess);
   S.draft=null;saveDraftSoon();
+  if(garminOn()&&!d.editing) setTimeout(()=>{autoLink();garminSync("quick");},0);
   const prs=sessPRs(sess).length;
   S.tab="history";toast(`${d.editing?"Changes saved.":"Workout saved."}${prs?` ${prs} new record${prs===1?"":"s"}!`:""}`);render();
 }
@@ -1310,6 +1400,8 @@ function viewPlan(){
   <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
     ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
   h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Badminton tomorrow, keep arms fresh. Left knee a bit sore. Only one workout this week, so I can go longer.">${esc(g.note)}</textarea></div>`;
+  const un=unloggedActs()[0];
+  if(un) h+=`<div class="banner" role="status">Your watch has a ${esc(un.name||un.type)} on ${fmtDate(actDate(un))} (${durText(un.sec)}) that isn't in your log. Add it?<div class="row" style="margin-top:8px"><button class="btn" data-a="q5-add" data-v="${un.id}">Add to log</button><button class="btn ghost" data-a="q5-skip" data-v="${un.id}">Not a workout</button></div></div>`;
   const asks=checkins(), ans=askState().ans;
   // Answered check-ins stay listed even when the answer changed the conditions (e.g. strength only).
   for(const [id,a] of Object.entries(ans)) h+=`<p class="small" style="margin:0">✓ ${esc(cap(a.ctx))}: <b>${esc(a.label||a.v)}</b> <button class="btn ghost" data-a="ask-clear" data-v="${id}">Change</button></p>`;
@@ -1417,10 +1509,11 @@ function viewHistory(){
     h+=`<section class="card">${sortedSessions().map(s=>{
       const sets=(s.exercises||[]).reduce((a,e)=>a+e.sets.length,0), wl=s.wod?`${wodTitle(s.wod)}${scoreText(s)?" · "+scoreText(s):""}`:"";
       const vol=(s.exercises||[]).reduce((a,e)=>a+e.sets.reduce((b,t)=>b+num(t.w)*t.r,0),0);
-      return `<details class="sess" data-sid="${esc(s.id)}" ${S.openSess&&S.openSess.has(s.id)?"open":""}><summary><span><b>${fmtDate(s.date)}</b><br><span class="muted small">${esc(s.planTitle||s.where||"")}</span></span><span class="kv small muted" style="text-align:right">${s.wod?`${s.kind==="hybrid"?"Hybrid":"Conditioning"}${(s.exercises||[]).length?` · ${sets} sets`:""}`:`${(s.exercises||[]).length} exercises · ${sets} sets`}<br>${Math.round(vol).toLocaleString()} kg moved${s.durationMin?` · ${s.durationMin} min`:""}</span></summary>
+      return `<details class="sess" data-sid="${esc(s.id)}" ${S.openSess&&S.openSess.has(s.id)?"open":""}><summary><span><b>${fmtDate(s.date)}</b><br><span class="muted small">${esc(s.planTitle||s.where||"")}</span></span><span class="kv small muted" style="text-align:right">${s.wod?`${s.kind==="hybrid"?"Hybrid":"Conditioning"}${(s.exercises||[]).length?` · ${sets} sets`:""}`:s.fromWatch&&!(s.exercises||[]).length?"From your watch":`${(s.exercises||[]).length} exercises · ${sets} sets`}<br>${s.fromWatch&&!vol?"":`${Math.round(vol).toLocaleString()} kg moved`}${s.durationMin?`${s.fromWatch&&!vol?"":" · "}${s.durationMin} min`:""}</span></summary>
         ${(prs=>(s.exercises||[]).map(e=>`<div class="row between small"><span>${esc(e.name)}${prs.includes(e.name)?`<span class="pr" title="Personal record">PR</span>`:""}</span><span class="kv">${esc(fmtSets(e.sets))}</span></div>`).join(""))(sessPRs(s))}
         ${s.wod?`<div class="small"><b>${esc(wl)}</b><br><span class="muted">${esc(s.wod.movements.map(m=>moveText(m,s.rx===false)).join(" · "))}</span></div>`:""}
         ${s.note?`<div class="muted small">${esc(s.note)}</div>`:""}
+        ${viewSessGarmin(s)}
         ${S.confirm==="del-"+s.id?`<div class="inline-confirm"><span class="small">Delete this session for good?</span><button class="btn danger" data-a="sess-del-yes" data-v="${s.id}">Delete</button><button class="btn" data-a="confirm-no">Keep</button></div>`:`<div class="row"><button class="btn" data-a="sess-edit" data-v="${s.id}">Edit</button><button class="btn ghost danger" data-a="sess-del" data-v="${s.id}">Delete session</button></div>`}
       </details>`;}).join("")}</section>`;
     return h;
@@ -1642,6 +1735,16 @@ document.addEventListener("click",async ev=>{
       if(id==="hard"&&val==="strength")g.mix=100;
       if(id==="ease"&&val==="yes"){g.energy="tired";g.energyPick=todayISO();}
       break;}
+    case "glink-open": S.linkPick=v;break;
+    case "glink-cancel": S.linkPick=null;break;
+    case "glink": {const [sid,aid]=v.split("|");const x=S.sessions.find(y=>y.id===sid),a=(S.garmin.acts||[]).find(y=>String(y.id)===aid);if(x&&a){linkManual(x,a);toast("Linked.");}S.linkPick=null;break;}
+    case "glink-del": {const [sid,part]=v.split("|");const x=S.sessions.find(y=>y.id===sid);if(x&&x.garmin){const g={...x.garmin};delete g[part];
+      if(isHybrid(x)&&(g.strength||g.wod)&&!(g.strength&&g.wod))x.garmin={whole:g.strength||g.wod};else if(Object.keys(g).length)x.garmin=g;else delete x.garmin;
+      x.t0=x.t0||null;saveSession(x);}break;}
+    case "q5-add": {const a=(S.garmin.acts||[]).find(y=>String(y.id)===v);if(!a)break;const ms=actMs(a);
+      saveSession({id:uid(),date:actDate(a),where:"",energy:"normal",planTitle:a.name||(isWodAct(a)?"Cardio":"Strength"),note:"Added from your watch. Edit to add exercises.",durationMin:Math.round(actMin(a))||null,savedAt:Date.now(),exercises:[],t0:ms,fromWatch:true,garmin:{whole:actSnap(a)}});
+      toast("Added to your log.");break;}
+    case "q5-skip": ls.set(k("q5skip"),[...(ls.get(k("q5skip"))||[]),+v].slice(-200));break;
     case "ask-clear": {const a=askState();delete a.ans[v];ls.set(k("ask"),a);break;}
     case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
     case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
