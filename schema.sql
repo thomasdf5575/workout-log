@@ -99,3 +99,33 @@ begin
     create policy "read own calls" on public.ai_calls for select to authenticated using (auth.uid() = user_id);
   end if;
 end $$;
+
+-- Garmin Connect data, written by the garmin-sync Edge Function (one row per day / per activity).
+create table if not exists public.garmin_days (
+  user_id    uuid not null default auth.uid() references auth.users on delete cascade,
+  day        date not null,
+  data       jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, day)
+);
+create table if not exists public.garmin_activities (
+  user_id    uuid not null default auth.uid() references auth.users on delete cascade,
+  id         bigint not null,
+  start      timestamptz not null,
+  data       jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
+);
+create index if not exists garmin_activities_user_start on public.garmin_activities (user_id, start desc);
+alter table public.garmin_days       enable row level security;
+alter table public.garmin_activities enable row level security;
+grant select, insert, update, delete on public.garmin_days, public.garmin_activities to authenticated;
+do $$
+declare t text;
+begin
+  foreach t in array array['garmin_days','garmin_activities'] loop
+    if not exists (select 1 from pg_policies where schemaname='public' and tablename=t and policyname='own rows') then
+      execute format('create policy "own rows" on public.%I for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id)', t);
+    end if;
+  end loop;
+end $$;

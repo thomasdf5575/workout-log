@@ -438,6 +438,8 @@ function defaultSettings(){return {
   experience:"intermediate", sex:"", style:"compound", priority:"both", perWeek:3, goals:"", limits:"",
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
   exLib:{custom:[],hidden:[]},
+  personal:{birthYear:"",height:"",weights:[]},
+  garmin:{enabled:false,keyExpires:""},
   lastGen:{mix:100,where:"gym",dur:60,energy:"normal",focus:"full",muscles:[]}
 };}
 const S = {
@@ -489,7 +491,7 @@ async function runOp(op){
 setInterval(()=>{if(queue().length)flush();},30000);
 window.addEventListener("online",()=>{flush();pull();});
 window.addEventListener("offline",updateSync);
-document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&user){flush();pull();}});
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&user){flush();pull();garminSync();}});
 function updateSync(){
   const q=user?queue():[]; const n=q.length;
   S.syncText=!navigator.onLine?(n?`Offline · ${n} change${n>1?"s":""} to sync`:"Offline"):(n?"Syncing…":"Synced");
@@ -521,7 +523,7 @@ async function pull(){
     if(!pk.has("plan")&&!S.genBusy) S.plan=pl.data?clone(pl.data.data):null;
     const first=S.firstPull; S.firstPull=false; // only pick up a workout in progress from another device when the app opens
     if(first&&!S.draft&&!pk.has("draft")&&dr.data&&dr.data.data&&dr.data.data.exercises){S.draft=clone(dr.data.data);ls.set(k("draft"),S.draft);}
-    saveCache();
+    saveCache(); garminSync(); // settings may only now say Garmin is on
     const a=document.activeElement; if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA")) {renderNav();renderStatus();return;}
     render();
   }catch(e){console.error(e);S.stale=true;S.lastErr=String(e&&e.message||e);render();}
@@ -577,14 +579,14 @@ async function boot(){
 }
 function setUser(u){
   user=u; S.confirm=null; S.histEx=null;
-  if(!u){S.mode="signedout";S.sessions=[];S.plan=null;S.draft=null;S.settings=defaultSettings();render();return;}
+  if(!u){S.mode="signedout";S.garmin={days:{},acts:[],busy:false,status:"",tryAt:0};S.sessions=[];S.plan=null;S.draft=null;S.settings=defaultSettings();render();return;}
   S.mode="ready";
   const c=ls.get(k("cache"));
   S.settings=mergeSettings(c&&c.settings); S.sessions=(c&&c.sessions)||[]; S.plan=(c&&c.plan)||null;
   S.gen={...S.settings.lastGen,acts:{},note:""};
   const dr=ls.get(k("draft")); S.draft=dr&&dr.exercises?dr:null;
-  S.firstPull=true;
-  render(); flush(); pull();
+  S.firstPull=true; loadGarminCache();
+  render(); flush(); pull(); garminSync();
 }
 async function authSubmit(){
   const email=$("#authEmail").value.trim(), pass=$("#authPass")?$("#authPass").value:"";
@@ -765,6 +767,77 @@ function trainingBlock(){
 function profileByid(id){return S.settings.profiles.find(p=>p.id===id)||S.settings.profiles[0];}
 function availableExercises(prof){return LIB.filter(x=>x.eq.every(q=>prof.eq.includes(q)));}
 
+/* ---------------- Garmin ----------------
+   The garmin-sync Edge Function pulls recent Garmin Connect data into garmin_days and
+   garmin_activities; the app reads those tables. Everything works without Garmin. */
+S.garmin={days:{},acts:[],busy:false,status:"",tryAt:0};
+const garminOn=()=>!!(S.settings.garmin&&S.settings.garmin.enabled);
+const GARMIN_ERR={
+  garmin_not_configured:"The GARMIN_API_KEY secret isn't set in Supabase yet.",
+  garmin_key_rejected:"Garmin rejected the key. It may have expired or been deleted: create a new one and update the GARMIN_API_KEY secret.",
+  not_allowed:"This account isn't on the list allowed to use the Garmin sync.",
+  not_signed_in:"Your sign-in has expired. Sign out and back in.",
+  not_deployed:"The garmin-sync function isn't deployed in Supabase yet.",
+  save_failed:"Garmin data arrived but couldn't be saved: run the latest schema.sql in Supabase."
+};
+function saveGarminCache(){if(user){const g=S.garmin;ls.set(k("garmin"),{days:g.days,acts:g.acts,syncAt:g.syncAt,profile:g.profile,status:g.status,counts:g.counts});}}
+function loadGarminCache(){const c=ls.get(k("garmin"))||{};S.garmin={days:{},acts:[],...c,busy:false,tryAt:0};}
+async function loadGarmin(){
+  if(!sb||!user||!navigator.onLine) return;
+  const since=addDays(todayISO(),-34);
+  const [d,a]=await Promise.all([
+    sb.from("garmin_days").select("day,data").gte("day",since).limit(100),
+    sb.from("garmin_activities").select("id,start,data").gte("start",since+"T00:00:00Z").order("start",{ascending:false}).limit(300)
+  ]);
+  if(d.error||a.error) throw new Error("save_failed");
+  S.garmin.days=Object.fromEntries(d.data.map(r=>[r.day,r.data]));
+  S.garmin.acts=a.data.map(r=>({...r.data,id:r.id,start:r.start}));
+  saveGarminCache();
+}
+// Sync when the app opens, when it comes back to the foreground and before a plan; at most every 15 minutes.
+async function garminSync(force){
+  const g=S.garmin;
+  if(!garminOn()||!sb||!user||!navigator.onLine||g.busy) return;
+  if(!force&&Date.now()-Math.max(g.syncAt||0,g.tryAt||0)<15*60000) return;
+  g.busy=true;g.tryAt=Date.now();softRender();
+  try{
+    const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:force||!g.syncAt?28:7}});
+    if(error){let code="sync_failed";try{if(error.context&&error.context.status===404)code="not_deployed";const b=await error.context.json();code=b.error||code;}catch(e){}throw new Error(code);}
+    g.syncAt=Date.now();g.profile=data.profile||g.profile;g.counts={days:data.days,activities:data.activities};
+    const missing=Object.keys(data.errors||{});
+    g.status=missing.length?`Synced, but Garmin didn't return: ${missing.join(", ")}.`:"";
+    await loadGarmin();
+  }catch(e){console.error(e);g.status=GARMIN_ERR[e.message]||"Couldn't reach Garmin. The app works as usual without it.";}
+  finally{g.busy=false;saveGarminCache();softRender();}
+}
+function softRender(){const a=document.activeElement;if(a&&(a.tagName==="INPUT"||a.tagName==="TEXTAREA")){renderNav();renderStatus();return;}if(S.mode==="ready")render();}
+function garminKeyDays(){const e=S.settings.garmin&&S.settings.garmin.keyExpires;return garminOn()&&e?daysBetween(todayISO(),e):null;}
+function agoText(ts){const m=Math.round((Date.now()-ts)/60000);return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:`${Math.round(m/1440)} d ago`;}
+const durText=sec=>{const m=Math.round((sec||0)/60);return m>=60?`${Math.floor(m/60)} h ${String(m%60).padStart(2,"0")}`:`${m} min`;};
+
+/* Personal info: weight (latest of manual and Garmin wins), height and age. */
+function weightPoints(){
+  const pts=((S.settings.personal||{}).weights||[]).map(w=>({date:w.date,kg:num(w.kg),src:"you"})).filter(w=>w.kg>0);
+  for(const [d,x] of Object.entries(S.garmin.days||{})) if(x&&x.weightKg>0) pts.push({date:d,kg:x.weightKg,src:"Garmin"});
+  return pts.sort((a,b)=>b.date.localeCompare(a.date)||(a.src==="you"?-1:1));
+}
+function currentWeight(){
+  const p=weightPoints()[0]; if(p) return p;
+  const gp=S.garmin.profile; return gp&&gp.weightKg>0?{date:"",kg:gp.weightKg,src:"Garmin profile"}:null;
+}
+function weightTrend(){
+  const pts=weightPoints(); if(pts.length<2) return null;
+  const cut=addDays(todayISO(),-30); const old=pts.filter(p=>p.date>=cut).pop();
+  if(!old||old===pts[0]||old.date===pts[0].date) return null;
+  return {kg:Math.round((pts[0].kg-old.kg)*10)/10,days:daysBetween(old.date,pts[0].date)};
+}
+function personalVal(f){const p=S.settings.personal||{},gp=S.garmin.profile||{};const own=num(p[f]);if(own>0)return {v:own,src:"you"};const g=f==="height"?gp.heightCm:gp.birthYear;return g>0?{v:g,src:"Garmin"}:null;}
+function bodyText(){
+  const by=personalVal("birthYear"),h=personalVal("height"),w=currentWeight(),out=[];
+  if(by) out.push(`age ${new Date().getFullYear()-by.v}`); if(w) out.push(`${w.kg} kg body weight`); if(h) out.push(`${Math.round(h.v)} cm`);
+  return out.join(", ");
+}
+
 /* ---------------- AI generation ---------------- */
 function buildPrompt(){
   const g=S.gen, st=S.settings, prof=profileByid(g.where), mix=mixOf(g), what=mix===100?"strength":mix===0?"conditioning":"hybrid";
@@ -823,7 +896,7 @@ TRAINEE
 - Weekly volume target: ${tLo}-${tHi} working sets per muscle per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle).
 - Planned strength sessions per week: ${perWeek}. Sessions in the last 7 days: ${done7}.
 - Experience: ${EXPERIENCE[expOf(st)].rule}
-- Sex: ${sexTxt}
+- Sex: ${sexTxt}${bodyText()?`; ${bodyText()}`:""}
 - Exercise style: ${STYLE_RULE[st.style]||STYLE_RULE.compound}
 - Goals in their words: ${st.goals.trim()||"none beyond the priority"}
 - Limitations / exercises to avoid: ${st.limits.trim()||"none stated"}
@@ -913,6 +986,7 @@ async function generate(tweak){
   S.genError="";
   if(!navigator.onLine){S.genError="You're offline. Building a plan needs a connection; logging works offline.";render();return;}
   S.settings.lastGen={mix:mixOf(S.gen),where:S.gen.where,dur:S.gen.dur,energy:S.gen.energy,focus:S.gen.focus,muscles:S.gen.muscles};saveSettings();
+  if(garminOn()){const t0=genToken;S.genBusy=true;render();await Promise.race([garminSync(),new Promise(r=>setTimeout(r,8000))]);if(t0!==genToken)return;}
   const prompt=buildPrompt();
   const messages=tweak&&S.plan?[{role:"user",content:prompt},{role:"assistant",content:JSON.stringify(S.plan)},{role:"user",content:`Adjust this session: ${tweak}. Keep everything else that still fits. Return the full JSON object again, same shape.`}]:[{role:"user",content:prompt}];
   S.genBusy=true;render();
@@ -1126,8 +1200,8 @@ function viewWelcome(){
   return h;
 }
 function viewPlan(){
-  const g=S.gen, st=S.settings;
-  let h=`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
+  const g=S.gen, st=S.settings, kd=garminKeyDays();
+  let h=(kd!==null&&kd<=7?`<div class="banner">${kd<0?"Your Garmin key has expired.":`Your Garmin key expires ${kd===0?"today":kd===1?"tomorrow":`in ${kd} days`}.`} Create a new one in Garmin Connect and update the GARMIN_API_KEY secret in Supabase (Setup → Garmin).</div>`:"")+`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
   <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><label class="lbl" for="mix">Strength or conditioning (WOD)</label>
     <div class="row between small muted" style="margin-bottom:-4px"><span>Strength</span><span>WOD</span></div>
@@ -1361,6 +1435,52 @@ function viewAiUsage(){
     `${u.n} plan${u.n===1?"":"s"} · on average ${u.inAvg.toLocaleString()} tokens in, ${u.outAvg.toLocaleString()} out (incl. thinking) · about $${u.cost.toFixed(u.cost<1?3:2)} in total`;
   return `<section class="card"><h2>AI usage</h2><p class="muted small" style="margin:0">Last 30 days, estimated from API list prices.</p><p class="small" style="margin:0">${esc(body)}</p></section>`;
 }
+function viewPersonal(){
+  const st=S.settings, p=st.personal||{}, gp=S.garmin.profile||{}, w=currentWeight(), tr=weightTrend();
+  const mine=(p.weights||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
+  const gHint=v=>v?`From Garmin: ${v}`:"";
+  return `<section class="card"><h2>Personal info</h2><p class="muted small" style="margin:0">Used to set starting weights, judge bodyweight exercises and tailor plans.</p>
+  <div class="field"><p class="lbl">Sex</p><div class="seg">${chip("Male",st.sex==="male","sex","male")}${chip("Female",st.sex==="female","sex","female")}</div><p class="muted small" style="margin:6px 0 0">Only used for default weights in conditioning workouts (e.g. wall ball 9 or 6 kg).</p></div>
+  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${Object.entries(EXPERIENCE).map(([x,e])=>`<option value="${x}" ${expOf(st)===x?"selected":""}>${e.label}</option>`).join("")}</select><p class="muted small" style="margin:6px 0 0">${esc(EXPERIENCE[expOf(st)].about)}</p></div>
+  <div class="field"><label class="lbl" for="goals">Goals</label><textarea id="goals" data-in="goals" placeholder="e.g. Stronger legs and back for badminton, stay injury-free, some muscle">${esc(st.goals)}</textarea></div>
+  <div class="field"><label class="lbl" for="limits">Limitations and exercises to avoid</label><textarea id="limits" data-in="limits" placeholder="e.g. No behind-the-neck presses. Go easy on deep knee flexion.">${esc(st.limits)}</textarea></div>
+  <div class="row" style="flex-wrap:nowrap;gap:10px">
+    <div class="field" style="flex:1"><label class="lbl" for="pBirth">Birth year</label><input type="number" inputmode="numeric" id="pBirth" data-in="p-birth" value="${esc(p.birthYear||"")}" placeholder="${esc(gHint(gp.birthYear))}"></div>
+    <div class="field" style="flex:1"><label class="lbl" for="pHeight">Height (cm)</label><input type="number" inputmode="decimal" id="pHeight" data-in="p-height" value="${esc(p.height||"")}" placeholder="${esc(gHint(gp.heightCm))}"></div></div>
+  </section>
+  <section class="card"><h2>Body weight</h2>
+  <p style="margin:0">${w?`<b>${w.kg} kg</b> <span class="muted small">${w.date?fmtDate(w.date)+" · ":""}${esc(w.src==="you"?"entered by you":"from "+w.src)}</span>`:`<span class="muted">No weight yet.</span>`}</p>
+  ${tr?`<p class="muted small" style="margin:0">${tr.kg>0?"+":""}${tr.kg} kg over ${tr.days} days</p>`:""}
+  <p class="muted small" style="margin:0">${garminOn()?"Weigh-ins recorded in Garmin Connect (scale or entered there) come in automatically. ":""}The most recent weight is used, whichever source it comes from.</p>
+  <div class="row" style="flex-wrap:nowrap;gap:10px;align-items:flex-end">
+    <div class="field" style="flex:1"><label class="lbl" for="pW">Today's weight (kg)</label><input type="number" inputmode="decimal" step="0.1" id="pW" placeholder="e.g. 78.4"></div>
+    <button class="btn" data-a="weight-add">Add</button></div>
+  ${mine.length?`<div class="small">${mine.map(x=>`<div class="row between"><span>${fmtDate(x.date)} · ${esc(String(x.kg))} kg</span><button class="btn ghost danger xbtn" data-a="weight-del" data-v="${esc(x.date)}" aria-label="Delete weight for ${esc(fmtDate(x.date))}">✕</button></div>`).join("")}</div>`:""}
+  </section>`;
+}
+function viewGarmin(){
+  const st=S.settings, gs=st.garmin||{}, g=S.garmin, kd=garminKeyDays();
+  const days=Object.keys(g.days||{}).sort(), last=days.length?g.days[days[days.length-1]]:null, lastDay=days[days.length-1];
+  const facts=last?[last.sleepSec?`sleep ${durText(last.sleepSec)}${last.sleepScore?` (score ${last.sleepScore})`:""}`:"",last.hrv?`HRV ${last.hrv} ms${last.hrvStatus?` (${String(last.hrvStatus).toLowerCase()})`:""}`:"",last.rhr?`resting HR ${last.rhr}`:"",last.bbWake?`Body Battery ${last.bbWake}`:""].filter(Boolean):[];
+  const acts=(g.acts||[]).slice(0,5);
+  let h=`<section class="card"><h2>Garmin</h2><p class="muted small" style="margin:0">Reads your sleep, HRV, resting heart rate, Body Battery, weight and activities from Garmin Connect. The app works the same without it.</p>
+  <div class="field"><p class="lbl">Use Garmin data</p><div class="seg">${chip("On",!!gs.enabled,"garmin-on","1")}${chip("Off",!gs.enabled,"garmin-on","0")}</div></div>`;
+  if(gs.enabled){
+    h+=`<div class="field"><label class="lbl" for="gExp">Key expires on</label><input type="date" id="gExp" data-in="garmin-exp" value="${esc(gs.keyExpires||"")}"><p class="muted small" style="margin:6px 0 0">${kd===null?"Shown in Garmin Connect next to the key. You'll get a reminder here 2 weeks before, and on the Plan page in the last week.":kd<0?"⚠ The key has expired.":`${kd} day${kd===1?"":"s"} left.`}</p></div>
+    <div class="row between"><span class="small">${g.busy?"Syncing…":g.syncAt?`Last sync ${agoText(g.syncAt)}`:"Not synced yet"}</span><button class="btn" data-a="garmin-sync" ${g.busy?"disabled":""}>Sync now</button></div>
+    ${g.status?`<div class="banner" role="status">${esc(g.status)}</div>`:""}
+    ${last?`<p class="small" style="margin:0"><b>${fmtDate(lastDay)}:</b> ${esc(facts.join(" · ")||"no health data")}</p>`:""}
+    ${acts.length?`<div class="small"><p class="lbl" style="margin:0">Recent activities</p>${acts.map(a=>`<div>${esc((a.startLocal||a.start||"").slice(0,10)?fmtDate((a.startLocal||a.start).slice(0,10)):"")} · ${esc(a.name||a.type)} · ${durText(a.sec)}${a.m>0?` · ${(a.m/1000).toFixed(1)} km`:""}${a.avgHr?` · avg HR ${a.avgHr}`:""}</div>`).join("")}</div>`:""}`;
+  }
+  h+=`</section>`;
+  if(gs.enabled) h+=`<section class="card"><h2>One-time setup</h2><ol class="small" style="margin:0;padding-left:20px">
+    <li>In Garmin Connect on the web, open <a href="https://connect.garmin.com/app/settings/personalApiToken" target="_blank" rel="noopener">Settings → Personal API</a> and create a key. Copy it: it's shown only once.</li>
+    <li>In Supabase → Edge Functions → Secrets, add <b>GARMIN_API_KEY</b> with that key.</li>
+    <li>Deploy the <b>garmin-sync</b> function (the file garmin-sync.ts in the repo) and run the latest schema.sql in the SQL editor.</li>
+    <li>Enter the key's expiry date above, then tap Sync now.</li></ol>
+    <button class="btn ghost" data-a="garmin-diag" style="align-self:flex-start">Copy diagnostics</button><p class="muted small" style="margin:0">Copies a sample of what Garmin returned, to check that the app reads it correctly.</p></section>`;
+  return h;
+}
 function viewSetup(){
   const st=S.settings;
   let h=`<div class="row between" style="position:sticky;top:0;z-index:2;background:var(--bg);padding:4px 0"><span class="muted small" id="saveState" role="status">Changes save automatically</span><button class="btn primary" data-a="settings-save">Save</button></div>`;
@@ -1370,19 +1490,25 @@ function viewSetup(){
     <p class="lbl" style="margin:0">Conditioning</p><div class="seg">${Object.keys(EQUIP).filter(k=>!EQUIP_STRENGTH.includes(k)).map(k=>chip(EQUIP[k],p.eq.includes(k),"prof-eq",i+"|"+k,"sm")).join("")}</div>
     ${viewWeights(p,i)}</div>`).join("")}
   <button class="btn" data-a="prof-add">Add a location</button></section>`;
-  if(S.setupPage==="locations") return h+`<button class="btn ghost" data-a="setup-back" style="align-self:flex-start">← Setup</button>`+locH;
+  const back=`<button class="btn ghost" data-a="setup-back" style="align-self:flex-start">← Setup</button>`;
+  if(S.setupPage==="locations") return h+back+locH;
+  if(S.setupPage==="personal") return h+back+viewPersonal();
+  if(S.setupPage==="garmin") return h+back+viewGarmin();
+  const w=currentWeight(), kd=garminKeyDays(), g=S.garmin;
+  const perSum=[st.sex?cap(st.sex):"",w?`${w.kg} kg`:"",EXPERIENCE[expOf(st)].label].filter(Boolean).join(" · ");
+  const garSum=!garminOn()?"Not connected":kd!==null&&kd<=14?`⚠ Key ${kd<0?"expired":`expires in ${kd} day${kd===1?"":"s"}`}`:g.busy?"Syncing…":g.status&&!g.syncAt?"Not synced yet":g.syncAt?`Synced ${agoText(g.syncAt)}`:"Not synced yet";
+  const row=(v,t,sub)=>`<button data-a="setup-page" data-v="${v}"><span><b>${t}</b><br><span class="muted small">${esc(sub)}</span></span><span aria-hidden="true">›</span></button>`;
   h+=`<section class="card"><div class="exlist">
-    <button data-a="setup-page" data-v="locations"><span><b>Locations and equipment</b><br><span class="muted small">${st.profiles.map(x=>esc(x.name)).join(", ")}</span></span><span aria-hidden="true">›</span></button></div></section>`;
+    ${row("personal","Personal info",perSum)}
+    ${row("locations","Locations and equipment",st.profiles.map(x=>x.name).join(", "))}
+    ${row("garmin","Garmin",garSum)}</div></section>`;
   h+=viewLibrary();
   const pk=prioOf(st);
-  h+=`<section class="card"><h2>About you</h2>
+  h+=`<section class="card"><h2>Training</h2>
   <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)} About ${weeklyTarget(st).join("–")} sets per muscle per week at your experience level.</p></div>
   <div class="field"><p class="lbl">Strength sessions per week</p><div class="seg">${[1,2,3,4,5,6].map(n=>chip(String(n),(Math.round(num(st.perWeek))||3)===n,"per-week",n)).join("")}</div><p class="muted small" style="margin:6px 0 0">The generator spreads each muscle's weekly sets over this many sessions.</p></div>
-  <div class="field"><p class="lbl">Sex</p><div class="seg">${chip("Male",st.sex==="male","sex","male")}${chip("Female",st.sex==="female","sex","female")}</div><p class="muted small" style="margin:6px 0 0">Only used for default weights in conditioning workouts (e.g. wall ball 9 or 6 kg).</p></div>
-  <div class="field"><label class="lbl" for="exp">Experience</label><select id="exp" data-in="exp">${Object.entries(EXPERIENCE).map(([x,e])=>`<option value="${x}" ${expOf(st)===x?"selected":""}>${e.label}</option>`).join("")}</select><p class="muted small" style="margin:6px 0 0">${esc(EXPERIENCE[expOf(st)].about)}</p></div>
   <div class="field"><p class="lbl">Exercise style</p><div class="seg">${Object.entries(STYLES).map(([k,l])=>chip(l,st.style===k,"style",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${st.style==="compound"?"Sessions are built around multi-joint lifts; isolation work only fills gaps.":st.style==="balanced"?"Main lifts first, then an even mix of compound and isolation work.":"One or two main lifts, then mostly isolation work."}</p></div>
-  <div class="field"><label class="lbl" for="goals">Goals</label><textarea id="goals" data-in="goals" placeholder="e.g. Stronger legs and back for badminton, stay injury-free, some muscle">${esc(st.goals)}</textarea></div>
-  <div class="field"><label class="lbl" for="limits">Limitations and exercises to avoid</label><textarea id="limits" data-in="limits" placeholder="e.g. No behind-the-neck presses. Go easy on deep knee flexion.">${esc(st.limits)}</textarea></div></section>`;
+  </section>`;
   h+=viewAiUsage();
   h+=`<section class="card"><h2>Your account</h2><p class="muted small" style="margin:0">Signed in as <b>${esc(user&&user.email||"")}</b>. Your log is saved to this account and synced across your devices.</p>
   ${S.confirm==="signout"?`<div class="inline-confirm"><span class="small">Some changes haven't synced yet and will be lost if you sign out now.</span><button class="btn danger" data-a="signout">Sign out anyway</button><button class="btn" data-a="confirm-no">Stay signed in</button></div>`:`<button class="btn" data-a="signout">Sign out</button>`}</section>
@@ -1476,6 +1602,12 @@ document.addEventListener("click",async ev=>{
     case "style": st.style=v;saveSettings();break;
     case "welcome-done": st.baselines=(st.baselines||[]).filter(b=>b.name&&num(b.r)>0);st.onboarded=true;await saveSettings();flush();$("#main").scrollTop=0;break;
     case "sex": st.sex=st.sex===v?"":v;saveSettings();break;
+    case "garmin-on": st.garmin={...(st.garmin||{}),enabled:v==="1"};saveSettings();if(v==="1")garminSync(true);break;
+    case "garmin-sync": garminSync(true);break;
+    case "garmin-diag": {toast("Asking Garmin…");const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:3,debug:true}});
+      const txt=JSON.stringify(error?{error:String(error.message||error)}:data,null,1);try{await navigator.clipboard.writeText(txt);toast("Diagnostics copied.");}catch(e){toast("Couldn't copy to the clipboard.");}return;}
+    case "weight-add": {const kgv=num($("#pW").value);if(!(kgv>=25&&kgv<=350)){toast("Enter your weight in kg, e.g. 78.4.");return;}st.personal=st.personal||{};const t=todayISO();st.personal.weights=[{date:t,kg:Math.round(kgv*10)/10},...(st.personal.weights||[]).filter(x=>x.date!==t)].slice(0,120);saveSettings();toast("Weight saved.");break;}
+    case "weight-del": st.personal.weights=(st.personal.weights||[]).filter(x=>x.date!==v);saveSettings();break;
     case "priority": st.priority=PRIORITIES[v]?v:"both";saveSettings();break;
     case "per-week": st.perWeek=Math.max(1,Math.min(7,+v||3));saveSettings();break;
     case "bl-add": st.baselines.push({name:"",w:"",r:""});saveSettings();break;
@@ -1507,6 +1639,9 @@ document.addEventListener("input",ev=>{
     case "bl": {const b=st.baselines[+t.dataset.i];const f=t.dataset.f;b[f]=f==="name"?t.value:t.value.replace(/[^0-9.,]/g,"");const el=$("#blh-"+t.dataset.i);if(el)el.textContent=blText(b);saveSettingsSoon();break;}
     case "exp": st.experience=EXPERIENCE[t.value]?t.value:"intermediate";saveSettings();render();break;
     case "goals": st.goals=t.value;saveSettingsSoon();break;
+    case "p-birth": st.personal=st.personal||{};st.personal.birthYear=t.value.replace(/[^0-9]/g,"").slice(0,4);saveSettingsSoon();break;
+    case "p-height": st.personal=st.personal||{};st.personal.height=t.value.replace(/[^0-9.,]/g,"");saveSettingsSoon();break;
+    case "garmin-exp": st.garmin={...(st.garmin||{}),keyExpires:/^\d{4}-\d{2}-\d{2}$/.test(t.value)?t.value:""};saveSettingsSoon();break;
     case "lib-name": if(S.libEdit)S.libEdit.name=t.value;break;
     case "lib-easier": if(S.libEdit)S.libEdit.easier=t.value;break;
     case "lib-filter": S.libFilter=t.value;S.confirm=null;render();break;
@@ -1514,7 +1649,7 @@ document.addEventListener("input",ev=>{
     case "limits": st.limits=t.value;saveSettingsSoon();break;
   }
 });
-document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT")||t.dataset.in==="hist-ex"||t.dataset.in==="lib-filter"||t.dataset.in==="lib-sel")){t.dispatchEvent(new Event("input",{bubbles:true}));}});
+document.addEventListener("change",ev=>{const t=ev.target;if(t.dataset&&(t.dataset.in==="exp"||t.dataset.in==="d-where"||(t.dataset.in==="set"&&t.tagName==="SELECT")||t.dataset.in==="hist-ex"||t.dataset.in==="lib-filter"||t.dataset.in==="lib-sel"||t.dataset.in==="garmin-exp")){t.dispatchEvent(new Event("input",{bubbles:true}));}});
 document.addEventListener("toggle",e=>{const d=e.target;if(d&&d.dataset&&d.dataset.sid){S.openSess=S.openSess||new Set();d.open?S.openSess.add(d.dataset.sid):S.openSess.delete(d.dataset.sid);}},true);
 ["pointerdown","mousedown"].forEach(t=>document.addEventListener(t,e=>{if(e.target.closest&&e.target.closest(".xbtn"))e.preventDefault();}));
 setInterval(()=>{const e=$("#elapsed");if(e)e.textContent=elapsed();},30000);
