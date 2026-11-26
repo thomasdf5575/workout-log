@@ -132,6 +132,22 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .chart{width:100%;height:auto;display:block}
 .chart text{fill:var(--muted);font-size:19px;font-family:var(--body)}
 .empty{padding:22px 12px;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:12px;align-items:center}
+.done-hero{text-align:center}
+.done-title{font-size:30px;margin:4px 0 2px;animation:pop .6s cubic-bezier(.2,1.6,.4,1) both}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:scale(1);opacity:1}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px}
+.tile{background:var(--accent-soft);border-radius:12px;padding:10px 6px;display:flex;flex-direction:column;align-items:center;gap:2px;animation:pop .5s ease-out both}
+.tile:nth-child(2){animation-delay:.08s}.tile:nth-child(3){animation-delay:.16s}.tile:nth-child(4){animation-delay:.24s}.tile:nth-child(5){animation-delay:.32s}
+.tile b{font-size:24px;font-variant-numeric:tabular-nums}.tile span{font-size:13px;color:var(--muted)}
+.prs{text-align:left;display:flex;flex-direction:column;gap:6px}
+.done-bars .t{position:relative;display:flex;height:14px}
+.done-bars .f{border-radius:0}.done-bars .f.base{opacity:.45}
+.done-bars .f.add{background:var(--good);transition:width 1.1s cubic-bezier(.2,.8,.2,1) .2s}
+.done-bars .tgt{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink);opacity:.5}
+.done-bars .plus{color:var(--good);font-weight:700}.done-bars .hit{color:var(--good);font-weight:700}
+.confetti{position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;z-index:50}
+@media (prefers-reduced-motion:reduce){.done-title,.tile{animation:none}.done-bars .f.add{transition:none}}
+.emph{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center}
 .banner{background:var(--warn-soft);color:var(--ink);border-radius:10px;padding:10px 12px;font-size:14px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(132px + env(safe-area-inset-bottom));background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;font-size:15px;z-index:9;max-width:90%;text-align:center}
 .prof{border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px;background:var(--sunk)}
@@ -360,6 +376,17 @@ const EXPERIENCE = {
 };
 const expOf=st=>EXPERIENCE[st&&st.experience]?st.experience:"intermediate";
 // Weekly working-set target per muscle, from priority and experience.
+/* Per-muscle emphasis (the trainee's goals): emphasize = upper half of the range,
+   normal = full range, maintain = about a third (maintenance needs roughly 1/3 of the volume).
+   Recovery cost: big lower-body muscles take the most damage from heavy, lengthened work. */
+const EMPHASIS={emph:"Emphasize",normal:"Normal",maint:"Maintain"};
+const HEAVY_RECOVERY=["quads","hamstrings","glutes"];
+const SMALL_MUSCLES=["biceps","triceps","shoulders","calves","forearms","core"];
+const emphOf=(st,m)=>{const e=(st.emphasis||{})[m];return EMPHASIS[e]?e:"normal";};
+function muscleTarget(st,m){
+  const [lo,hi]=weeklyTarget(st), e=emphOf(st,m);
+  return e==="emph"?[Math.round((lo+hi)/2),hi]:e==="maint"?[Math.max(2,Math.round(lo/3)),Math.max(3,Math.round(hi/3))]:[lo,hi];
+}
 function weeklyTarget(st){
   const [lo,hi]=PRIORITIES[prioOf(st)].sets, ex=expOf(st);
   if(ex==="beginner") return [Math.max(3,Math.round(lo*0.75)),Math.max(5,Math.round(hi*0.65))];
@@ -439,6 +466,7 @@ function defaultSettings(){return {
   baselines:["Back squat","Barbell bench press","Deadlift","Overhead press","Barbell row","Pull-up"].map(name=>({name,w:"",r:""})),
   exLib:{custom:[],hidden:[]},
   personal:{birthYear:"",height:"",weights:[]},
+  emphasis:{quads:"emph",hamstrings:"emph",glutes:"emph",calves:"emph",back:"emph"},
   garmin:{enabled:false,keyExpires:""},
   lastGen:{mix:100,where:"gym",dur:60,energy:"normal",focus:"full",muscles:[]}
 };}
@@ -654,6 +682,11 @@ function isPR(t,b){
   if(w>0) return w>b.maxW||(r<=12&&e1rm(w,r)>b.maxE+0.01);
   return b.maxW===0&&r>b.maxR;
 }
+// The single best set of an exercise in one session: highest estimated 1RM (Epley, up to 12 reps),
+// else heaviest weight; bodyweight-only by reps. Only that set can be a PR, so earlier, weaker
+// sets in the same session don't get the badge too.
+function setScore(t){const w=num(t.w),r=num(t.r);if(!(r>0))return -1;return w>0?(r<=12?e1rm(w,r):w)+1e6:r;}
+function prSetIndex(sets,b){let bi=-1,bs=-1;(sets||[]).forEach((t,j)=>{const sc=setScore(t);if(sc>bs||(sc===bs&&num(t.w)>num(sets[bi].w))){bs=sc;bi=j;}});return bi>=0&&isPR(sets[bi],b)?bi:-1;}
 const sessPRs=s=>(s.exercises||[]).filter(e=>{const b=bestBefore(e.name,s.date,s.id,s.savedAt);return (e.sets||[]).some(t=>isPR(t,b));}).map(e=>e.name);
 // Double progression: hit the top of the rep range on every working set -> add one increment.
 function baselineFor(name){
@@ -1066,7 +1099,7 @@ The trainee chose 100% conditioning: "exercises" MUST be an empty list. No stren
 
 TODAY
 - Date: ${todayISO()}
-- Time available: ${g.dur} minutes in total including warm-up. ${what==="strength"?"Budget ~2.5-3 min per working set for compounds incl. rest, ~2 min for isolation, 5-8 min warm-up.":what==="hybrid"?`Split: ~10 min warm-up, ~${sMin} min of strength work (${mix}%, sized with the per-set budget: ~2.5-3 min per compound set, ~2 min per isolation set), a conditioning workout of ~${cMin} min (${100-mix}%), ~5 min cool-down.`:`Split: 8-12 min warm-up, a conditioning workout of ~${cMin} min (time cap or duration up to 30 min; if more time is left, extend the warm-up with skill practice for the day's movements and the cool-down with easy cardio and mobility), ~5 min cool-down.`}
+- Time available: ${g.dur} minutes of TRAINING (working sets with their rest${what!=="strength"?", and the conditioning workout":""}). Warm-up (~${WARM_MIN} min) and cool-down (~${COOL_MIN} min) come ON TOP and are not part of the ${g.dur} minutes. Fill the ${g.dur} minutes: the planned training should take ${g.dur} minutes, not less. "estMinutes" = training minutes only. ${what==="strength"?"Budget ~2.5-3 min per working set for compounds incl. rest, ~2 min for isolation.":what==="hybrid"?`Split: ~${sMin} min of strength work (${mix}%, sized with the per-set budget: ~2.5-3 min per compound set, ~2 min per isolation set), then a conditioning workout of ~${cMin} min (${100-mix}%).`:`A conditioning workout of ~${cMin} min (time cap or duration up to 30 min per piece; if ${cMin} is more than 30, fill the rest with skill practice and easy aerobic work for the day's movements, described in "warmup"; that part counts toward the ${g.dur} minutes).`}
 - Energy: ${g.energy} (fresh = full volume, may push${what!=="strength"?", a longer or heavier workout is fine":""}; normal = standard; tired = ~30% fewer sets, keep last weights or ~10% lighter, RIR 2-3, no new records, prefer stable/machine variants${what!=="strength"?"; a short or medium workout at moderate loads, no max efforts":""}).${readinessPrompt()}
 - Focus: ${focus}
 - Location: ${prof.name}. Equipment available: ${prof.eq.map(k=>EQUIP[k]).join(", ")||"none"} plus bodyweight.
@@ -1075,7 +1108,7 @@ TODAY
 
 TRAINEE
 - Priority: ${PRIORITY_RULE[pk]}
-- Weekly volume target: ${tLo}-${tHi} working sets per muscle per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle).
+- Weekly volume targets, working sets per week (fractional count: 1 per set for each main muscle, 0.5 for each secondary muscle): ${MUSCLES.map(m=>{const [a,b]=muscleTarget(st,m),e=emphOf(st,m);return `${m} ${a}-${b}${e!=="normal"?` (${EMPHASIS[e].toLowerCase()})`:""}`;}).join(", ")}.
 - Planned strength sessions per week: ${perWeek}. Sessions in the last 7 days: ${done7}.
 - Experience: ${EXPERIENCE[expOf(st)].rule}
 - Sex: ${sexTxt}${bodyText()?`; ${bodyText()}`:""}
@@ -1086,13 +1119,13 @@ TRAINEE
 ${what==="conditioning"?`WEEKLY CONTEXT
 - Volume: the weekly gap per muscle is the target minus the sets in the last 7 days; avoid hard training of a muscle trained heavily in the last 48h.
 `:`- Equipment: use only exercises possible with the equipment above. Prefer these names exactly (main muscles, * = compound): ${avail}. Other standard exercises are fine only if they need just the listed equipment.
-- Volume: for each muscle, the weekly gap is the target minus the sets in the last 7 days. Spread that gap over the remaining sessions of the week (about ${perWeek} per week), so each muscle is trained roughly twice a week. Put no more than ~8 hard sets for one muscle in a single session; beyond that, extra sets in the same session add little. Do not push muscles far above the top of the target.
+- Volume: for each muscle, the weekly gap is the target minus the sets in the last 7 days. Spread that gap over the remaining sessions of the week (about ${perWeek} per week), so each muscle is trained roughly twice a week. Per session: at most ~6 hard sets for ${HEAVY_RECOVERY.join(", ")} (heavy and lengthened lower-body work causes the most damage; leave 48h before training them hard again) and at most ~8 for any other muscle; beyond that, extra sets in the same session add little. Small muscles (${SMALL_MUSCLES.join(", ")}) recover in about 24-48h and may be trained on consecutive days. Do not push muscles far above the top of the target.
 - Effort: count only working sets; warm-up sets don't count. Give every exercise a target "rir" matching the priority. Avoid sets to failure on heavy free-weight compounds (squat, deadlift, barbell rows, overhead and bench press); failure is optional on the last set of isolation or machine work.
 - Progressive overload: for exercises with history, use the "next" target given (double progression). Never jump more than one increment. Logged effort is shown as @RIR (reps in reserve, 3+ = 3 or more): if sets were logged at 3+ RIR, the weight was too light; if at 0 RIR and below the rep range, hold or reduce the weight.
 - Exercise selection: keep the same main exercises from week to week so progress can be tracked; swap in a variation only for STALLED lifts, pain, or missing equipment. When options are otherwise equal, prefer exercises that load the muscle in a lengthened position (e.g. Romanian deadlift, overhead triceps extension, deep split squats, incline curls).
 - Rest: at least 2 min between sets of compounds (3-5 min for heavy strength work), 1-2 min for isolation. Longer rest keeps the quality of later sets.
 - Weights for exercises with no history or starting number: estimate conservatively from related lifts below (e.g. dumbbell press from bench press, Romanian deadlift from deadlift), erring light; use null if there is no sensible basis.
-- Balance: unless the focus says otherwise, prioritise muscles furthest below target and with the longest gap since trained; avoid hard training of a muscle trained heavily in the last 48h.
+- Balance: unless the focus says otherwise, prioritise muscles furthest below their own target and with the longest gap since trained; avoid hard training of a large muscle trained heavily in the last 48h.
 - Order: big compound lifts first while fresh, isolation and core last.
 `}
 DELOADS (lighter sessions only when needed)
@@ -1136,8 +1169,10 @@ function normalizeWod(w){
 }
 const mixOf=g=>[0,25,50,75,100].includes(g&&g.mix)?g.mix:100;
 // Minutes for strength and conditioning: total minus ~15 min of warm-up and cool-down, split by the mix.
-function splitMinutes(dur,mix){const train=Math.max(10,dur-15), sMin=Math.round(train*mix/100);return {sMin,cMin:train-sMin};}
-const mixText=(dur,mix)=>{const {sMin,cMin}=splitMinutes(dur,mix);return mix===100?`All strength · about ${sMin} min of lifting`:mix===0?`All conditioning · about ${cMin} min of work`:`Strength ${mix}% · WOD ${100-mix}% · about ${sMin} + ${cMin} min`;};
+// "Time available" is training time (lifting + WOD). Warm-up and cool-down come on top.
+const WARM_MIN=8, COOL_MIN=5;
+function splitMinutes(dur,mix){const train=Math.max(10,dur), sMin=Math.round(train*mix/100);return {sMin,cMin:train-sMin};}
+const mixText=(dur,mix)=>{const {sMin,cMin}=splitMinutes(dur,mix);const extra=` · + ~${WARM_MIN} min warm-up, ${COOL_MIN} min cool-down`;return (mix===100?`All strength · ${sMin} min of lifting`:mix===0?`All conditioning · ${cMin} min of work`:`Strength ${mix}% · WOD ${100-mix}% · ${sMin} + ${cMin} min`)+extra;};
 function normalizePlan(v){
   if(!v) throw new Error("bad");
   const kind=["strength","conditioning","hybrid"].includes(v.kind)?v.kind:(v.wod?"conditioning":"strength");
@@ -1234,9 +1269,11 @@ function finishDraft(){
   const where=d.where?profileByid(d.where).name:(d.origWhere||"");
   const sess={id:d.id,date:d.date,where,energy:d.energy,planTitle:d.planTitle||"",...(d.deload?{deload:true}:{}),...(d.wod?{kind:d.kind||"conditioning",wod:d.wod,score:{time:d.score.time||null,rounds:d.score.rounds===""?null:num(d.score.rounds),reps:num(d.score.reps)||0,capped:!!d.score.capped},rx:d.rx!==false,effort:d.effort||null}:{}),note:d.note||"",durationMin:mins&&mins<300?mins:null,savedAt:d.editing&&d.savedAt?d.savedAt:Date.now(),exercises,
     ...(d.editing?(d.keep||{}):{t0:d.startedAt||null,...(d.clock&&d.clock.start?{wodStart:d.clock.start+LEAD*1000,...(d.clock.doneAt!=null?{wodEnd:d.clock.start+LEAD*1000+Math.round(d.clock.doneAt*1000)}:{})}:{})})};
+  const volBefore=weekVolume();
   saveSession(sess);
   S.draft=null;saveDraftSoon();
-  if(garminOn()&&!d.editing) setTimeout(()=>{autoLink();garminSync("quick");},0);
+  if(!d.editing){S.done={id:sess.id,before:volBefore,after:weekVolume(),animated:false};S.tab="history";render();$("#main").scrollTop=0;
+    if(garminOn()) setTimeout(()=>{autoLink();garminSync("quick");},0); return;}
   const prs=sessPRs(sess).length;
   S.tab="history";toast(`${d.editing?"Changes saved.":"Workout saved."}${prs?` ${prs} new record${prs===1?"":"s"}!`:""}`);render();
 }
@@ -1358,11 +1395,50 @@ function render(){
   let h="";
   if(!navigator.onLine) h+=`<div class="banner">You're offline. Logging still works and will sync when you're back online.</div>`;
   else if(S.stale) h+=`<div class="banner">Couldn't reach your account just now. What you see may be out of date; your changes are kept on this phone.${S.lastErr?`<br><span class="small">Details: ${esc(S.lastErr)}</span>`:""}</div>`;
+  if(S.done){const x=S.sessions.find(y=>y.id===S.done.id);if(x){m.innerHTML=h+viewDone(x);m.scrollTop=S.done.animated?y:0;if(!S.done.animated){S.done.animated=true;animateDone(x);}return;}S.done=null;}
   h+=(S.tab==="plan"&&needsWelcome())?viewWelcome():({plan:viewPlan,log:viewLog,history:viewHistory,setup:viewSetup})[S.tab]();
   m.innerHTML=h; m.scrollTop=y;
   const mixUpd=()=>{const o=$("#mixOut"),t=mixText(S.gen.dur,mixOf(S.gen));if(o)o.textContent=t;const mx=$("#mix");if(mx)mx.setAttribute("aria-valuetext",t);};
   const r=$("#dur"); if(r) r.addEventListener("input",()=>{S.gen.dur=+r.value;$("#durOut").textContent=r.value+" min";mixUpd();});
   const mx=$("#mix"); if(mx) mx.addEventListener("input",()=>{S.gen.mix=100-(+mx.value);mixUpd();});
+}
+/* ---------------- Workout summary (after saving) ---------------- */
+function sessStats(x){
+  const sets=(x.exercises||[]).reduce((a,e)=>a+e.sets.length,0), vol=(x.exercises||[]).reduce((a,e)=>a+e.sets.reduce((b,t)=>b+num(t.w)*t.r,0),0);
+  const prs=[];for(const e of x.exercises||[]){const j=prSetIndex(e.sets,bestBefore(e.name,x.date,x.id,x.savedAt));if(j>=0){const t=e.sets[j];prs.push({name:e.name,txt:num(t.w)>0?`${t.w} kg × ${t.r}`:`${t.r} reps`});}}
+  return {sets,vol:Math.round(vol),prs};
+}
+function viewDone(x){
+  const st=sessStats(x), D=S.done, T=Object.fromEntries(MUSCLES.map(m=>[m,muscleTarget(S.settings,m)]));
+  const gain=MUSCLES.map(m=>({m,b:D.before[m]||0,a:D.after[m]||0,t:T[m]})).filter(g=>g.a>g.b).sort((p,q)=>(q.a-q.b)-(p.a-p.b));
+  const max=Math.max(...gain.map(g=>Math.max(g.a,g.t[1])),1);
+  const tile=(n,l,suffix="")=>`<div class="tile"><b data-count="${n}">${n.toLocaleString()}</b>${suffix}<span>${l}</span></div>`;
+  let h=`<section class="card done-hero"><p class="lbl" style="margin:0">${fmtDate(x.date)}${x.planTitle?` · ${esc(x.planTitle)}`:""}</p>
+    <h2 class="done-title">${st.prs.length?"New record! 🏆":"Workout done! 💪"}</h2>
+    <div class="tiles">${x.durationMin?tile(x.durationMin,"minutes"):""}${st.sets?tile(st.sets,"sets"):""}${st.vol?tile(st.vol,"kg moved"):""}${x.wod&&scoreText(x)?`<div class="tile"><b>${esc(scoreText(x))}</b><span>${esc(wodTitle(x.wod))}</span></div>`:""}${st.prs.length?tile(st.prs.length,st.prs.length===1?"record":"records"):""}</div>
+    ${st.prs.length?`<div class="prs">${st.prs.map(p=>`<div class="row between small"><span><span class="pr">PR</span> ${esc(p.name)}</span><b>${esc(p.txt)}</b></div>`).join("")}</div>`:""}</section>`;
+  if(gain.length) h+=`<section class="card"><h2>Your week</h2><p class="muted small" style="margin:0">Working sets per muscle over the last 7 days, with what this session added.</p>
+    <div class="bars done-bars">${gain.map(g=>{const hit=g.b<g.t[0]&&g.a>=g.t[0];return `<span>${cap(g.m)}</span><div class="t" title="${g.a} of ${g.t[0]}–${g.t[1]} sets"><div class="f base" style="width:${100*g.b/max}%"></div><div class="f add" data-w="${100*(g.a-g.b)/max}" style="width:0"></div><i class="tgt" style="left:${100*g.t[0]/max}%"></i></div><span class="n"><span class="plus">+${Math.round((g.a-g.b)*2)/2}</span> ${Math.round(g.a*2)/2}/${g.t[0]}${hit?` <span class="hit">✓</span>`:""}</span>`;}).join("")}</div>
+    <p class="muted small" style="margin:0">The line marks the bottom of each muscle's weekly target; ✓ = reached today.</p></section>`;
+  h+=`<button class="btn primary block" data-a="done-close">Done</button>`;
+  return h;
+}
+function animateDone(x){
+  const reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{document.querySelectorAll(".done-bars .add").forEach(el=>el.style.width=el.dataset.w+"%");}));
+  if(reduce) return;
+  document.querySelectorAll("[data-count]").forEach(el=>{const to=+el.dataset.count,t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/900),v=Math.round(to*(1-Math.pow(1-k,3)));el.textContent=v.toLocaleString();if(k<1)requestAnimationFrame(step);};requestAnimationFrame(step);});
+  confetti(sessStats(x).prs.length?220:120);
+}
+function confetti(n){
+  const c=document.createElement("canvas");c.className="confetti";c.setAttribute("aria-hidden","true");document.body.appendChild(c);
+  const W=c.width=innerWidth*devicePixelRatio, H=c.height=innerHeight*devicePixelRatio, g=c.getContext("2d"), cs=getComputedStyle(document.documentElement);
+  const cols=["--accent","--good","--warn","--bad"].map(v=>cs.getPropertyValue(v).trim()||"#1F4FE0").concat(["#FFC83D"]);
+  const ps=Array.from({length:n},()=>({x:W/2+(Math.random()-.5)*W*.3,y:H*.35,vx:(Math.random()-.5)*W*.018,vy:-Math.random()*H*.022-H*.006,s:(4+Math.random()*6)*devicePixelRatio,r:Math.random()*6,vr:(Math.random()-.5)*.3,c:cols[Math.floor(Math.random()*cols.length)]}));
+  const t0=performance.now();
+  const frame=t=>{const el=t-t0;g.clearRect(0,0,W,H);for(const p of ps){p.vy+=H*.0006;p.vx*=.99;p.x+=p.vx;p.y+=p.vy;p.r+=p.vr;g.save();g.translate(p.x,p.y);g.rotate(p.r);g.globalAlpha=Math.max(0,1-el/2600);g.fillStyle=p.c;g.fillRect(-p.s/2,-p.s/3,p.s,p.s*.66);g.restore();}
+    if(el<2600)requestAnimationFrame(frame);else c.remove();};
+  requestAnimationFrame(frame);
 }
 function chip(label,on,a,v,extra=""){return `<button class="chip ${extra}" data-a="${a}" data-v="${esc(v)}" aria-pressed="${on?"true":"false"}">${esc(label)}</button>`;}
 
@@ -1420,7 +1496,7 @@ function viewPlan(){
 }
 function viewPlanCard(p){
   const created=p.createdAt?new Date(p.createdAt):null;
-  let h=`<section class="card" aria-labelledby="ph"><div><p class="lbl">${created?`Generated ${created.toLocaleDateString(undefined,{day:"numeric",month:"short"})}, ${created.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"})}`:"Plan"} · about ${p.estMinutes} min${p.deload?` · <b>Lighter (deload) session</b>`:""}</p><h2 id="ph">${esc(p.title)}</h2></div>`;
+  let h=`<section class="card" aria-labelledby="ph"><div><p class="lbl">${created?`Generated ${created.toLocaleDateString(undefined,{day:"numeric",month:"short"})}, ${created.toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"})}`:"Plan"} · about ${p.estMinutes} min + warm-up${p.deload?` · <b>Lighter (deload) session</b>`:""}</p><h2 id="ph">${esc(p.title)}</h2></div>`;
   if(p.summary) h+=`<p style="margin:0">${esc(p.summary)}</p>`;
   if(p.warmup) h+=`<div class="callout"><b>Warm-up.</b> ${esc(p.warmup)}</div>`;
   if(p.exercises.length) h+=`<div class="block str"><p class="lbl" style="margin:0">Strength</p>${p.exercises.map((e,i)=>`<div class="plan-ex"><span class="num">${i+1}</span><div><div class="row between"><b>${esc(e.name)}</b><span>${mainTags(musclesOf(e).primary)}</span></div>${musclesOf(e).secondary.length?`<div class="muted small">${esc(secText(musclesOf(e).secondary))}</div>`:""}
@@ -1440,13 +1516,13 @@ function viewWodCard(w){
     ${w.purpose?`<p class="small" style="margin:6px 0 0"><b>Aim:</b> ${esc(w.purpose)}</p>`:""}</div>`;
 }
 function viewWeek(){
-  const v=weekVolume(),since=daysSince();const [tLo,tHi]=weeklyTarget(S.settings);const max=Math.max(tHi,...Object.values(v));
+  const v=weekVolume(),since=daysSince();const [tLo,tHi]=weeklyTarget(S.settings);const T=Object.fromEntries(MUSCLES.map(m=>[m,muscleTarget(S.settings,m)]));const max=Math.max(...MUSCLES.map(m=>T[m][1]),...Object.values(v));
   const n=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   if(!S.sessions.length) return `<section class="card"><h2>Your week</h2><p class="muted" style="margin:0">After your first logged session, this shows the sets per muscle over the last 7 days. The generator uses it to fill the gaps.</p></section>`;
   const oth=otherSummary(7);
   return `<section class="card"><div class="row between"><h2>Last 7 days</h2><span class="muted small">${n} session${n===1?"":"s"}</span></div>${oth?`<p class="small" style="margin:0">Also from your watch: ${esc(oth)}</p>`:""}
-  <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} sets"><div class="f ${v[m]<tLo?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small muted">${since[m]===undefined?"(never)":since[m]===0?"(today)":`(${since[m]}d)`}</span></span>`).join("")}</div>
-  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}, ${esc(expOf(S.settings))}); amber means below ${tLo}. Brackets show days since each muscle was last trained${garminOn()?", including runs, rides and other activities from your watch":""}.</p></section>`;
+  <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} of ${T[m][0]}–${T[m][1]} sets"><div class="f ${v[m]<T[m][0]?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small muted">${since[m]===undefined?"(never)":since[m]===0?"(today)":`(${since[m]}d)`}</span></span>`).join("")}</div>
+  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Base target ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}, ${esc(expOf(S.settings))}), higher for emphasized and lower for maintained muscles (Setup → Training). Amber means below that muscle's target. Brackets show days since each muscle was last trained${garminOn()?", including runs, rides and other activities from your watch":""}.</p></section>`;
 }
 
 function viewLog(){
@@ -1476,10 +1552,10 @@ function viewLog(){
     if(tgt.note) parts.push(esc(tgt.note)); else if(hint) parts.push(esc(hint.why)); else parts.push("First time: pick a weight you could lift for about 2 more reps");
     if(!d.editing) h+=`<div class="hint ${hint&&hint.stalled?"stall":""}">${parts.join(" · ")}</div>`;
     h+=`<table class="sets"><thead><tr><th scope="col">Set</th><th scope="col">${perHand(e.name)?"kg each":"kg"}</th><th scope="col">Reps</th><th scope="col"><abbr title="Reps in reserve: how many more reps you could have done (optional)">RIR</abbr></th><th scope="col"><span class="sr">Done</span></th></tr></thead><tbody>
-    ${e.sets.map((s,j)=>`<tr><td>${j+1}<span id="pr-${i}-${j}">${isPR(s,best)?`<span class="pr" title="Personal record">PR</span>`:""}</span></td><td><input type="text" inputmode="decimal" id="w-${i}-${j}" aria-label="Set ${j+1} weight${perHand(e.name)?" per dumbbell":""}" data-in="set" data-f="w" data-i="${i}" data-j="${j}" value="${esc(s.w)}" placeholder="0"></td>
+    ${(pj=>e.sets.map((s,j)=>`<tr><td>${j+1}<span id="pr-${i}-${j}">${j===pj?`<span class="pr" title="Personal record">PR</span>`:""}</span></td><td><input type="text" inputmode="decimal" id="w-${i}-${j}" aria-label="Set ${j+1} weight${perHand(e.name)?" per dumbbell":""}" data-in="set" data-f="w" data-i="${i}" data-j="${j}" value="${esc(s.w)}" placeholder="0"></td>
       <td><input type="text" inputmode="numeric" id="r-${i}-${j}" aria-label="Set ${j+1} reps" data-in="set" data-f="r" data-i="${i}" data-j="${j}" value="${esc(s.r)}" placeholder="${esc(String(tgt.reps||"").split(/[–-]/)[0])}"></td>
       <td><select class="rir" id="q-${i}-${j}" aria-label="Set ${j+1} reps in reserve (optional)" data-in="set" data-f="rir" data-i="${i}" data-j="${j}">${[["","–"],["0","0"],["1","1"],["2","2"],["3","3+"]].map(([v,l])=>`<option value="${v}" ${String(s.rir??"")===v?"selected":""}>${l}</option>`).join("")}</select></td>
-      <td><button class="check" data-a="set-done" data-i="${i}" data-j="${j}" aria-pressed="${s.done?"true":"false"}" aria-label="Mark set ${j+1} done">${ICONS.check}</button></td></tr>`).join("")}
+      <td><button class="check" data-a="set-done" data-i="${i}" data-j="${j}" aria-pressed="${s.done?"true":"false"}" aria-label="Mark set ${j+1} done">${ICONS.check}</button></td></tr>`).join(""))(prSetIndex(e.sets,best))}
     </tbody></table>
     <div class="row"><button class="btn" data-a="set-add" data-i="${i}">Add set</button>${e.sets.length>1?`<button class="btn ghost" data-a="set-del" data-i="${i}">Remove last set</button>`:""}</div></section>`;
   });
@@ -1706,6 +1782,8 @@ function viewSetup(){
   h+=`<section class="card"><h2>Training</h2>
   <div class="field"><p class="lbl">Priority</p><div class="seg">${Object.entries(PRIORITIES).map(([k,p])=>chip(p.label,pk===k,"priority",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${esc(PRIORITIES[pk].about)} About ${weeklyTarget(st).join("–")} sets per muscle per week at your experience level.</p></div>
   <div class="field"><p class="lbl">Strength sessions per week</p><div class="seg">${[1,2,3,4,5,6].map(n=>chip(String(n),(Math.round(num(st.perWeek))||3)===n,"per-week",n)).join("")}</div><p class="muted small" style="margin:6px 0 0">The generator spreads each muscle's weekly sets over this many sessions.</p></div>
+  <div class="field"><p class="lbl">Muscle emphasis</p><p class="muted small" style="margin:0 0 6px">Emphasize: upper half of the weekly target (${(()=>{const [a,b]=weeklyTarget(st);return `${Math.round((a+b)/2)}–${b}`;})()} sets). Maintain: about a third (${(()=>{const [a,b]=weeklyTarget(st);return `${Math.max(2,Math.round(a/3))}–${Math.max(3,Math.round(b/3))}`;})()}), enough to keep what you have.</p>
+    <div class="emph">${MUSCLES.map(m=>`<span class="small">${cap(m)}</span><div class="seg">${Object.entries(EMPHASIS).map(([k,l])=>chip(l,emphOf(st,m)===k,"emph",m+"|"+k,"sm")).join("")}</div>`).join("")}</div></div>
   <div class="field"><p class="lbl">Exercise style</p><div class="seg">${Object.entries(STYLES).map(([k,l])=>chip(l,st.style===k,"style",k)).join("")}</div><p class="muted small" style="margin:6px 0 0">${st.style==="compound"?"Sessions are built around multi-joint lifts; isolation work only fills gaps.":st.style==="balanced"?"Main lifts first, then an even mix of compound and isolation work.":"One or two main lifts, then mostly isolation work."}</p></div>
   </section>`;
   h+=viewAiUsage();
@@ -1725,7 +1803,7 @@ document.addEventListener("click",async ev=>{
   const b=ev.target.closest("[data-a]"); if(!b) return;
   const a=b.dataset.a, v=b.dataset.v, i=+b.dataset.i, j=+b.dataset.j; const g=S.gen, st=S.settings, d=S.draft;
   switch(a){
-    case "tab": S.tab=v;S.confirm=null;S.setupPage=null;render();$("#main").scrollTop=0;return;
+    case "tab": S.tab=v;S.confirm=null;S.done=null;S.setupPage=null;render();$("#main").scrollTop=0;return;
     case "gen-where": g.where=v;break;
     case "gen-energy": g.energy=v;g.energyPick=todayISO();break;
     case "ready-light": g.energy="tired";g.energyPick=todayISO();g.warnDone=todayISO();if(!/recovery-focused/i.test(g.note))g.note=(g.note.trim()?g.note.trim()+" ":"")+"Recovery-focused day: about half the usual sets, RIR 3+, nothing heavy.";break;
@@ -1735,6 +1813,7 @@ document.addEventListener("click",async ev=>{
       if(id==="hard"&&val==="strength")g.mix=100;
       if(id==="ease"&&val==="yes"){g.energy="tired";g.energyPick=todayISO();}
       break;}
+    case "done-close": S.done=null;S.tab="history";render();$("#main").scrollTop=0;return;
     case "glink-open": S.linkPick=v;break;
     case "glink-cancel": S.linkPick=null;break;
     case "glink": {const [sid,aid]=v.split("|");const x=S.sessions.find(y=>y.id===sid),a=(S.garmin.acts||[]).find(y=>String(y.id)===aid);if(x&&a){linkManual(x,a);toast("Linked.");}S.linkPick=null;break;}
@@ -1819,6 +1898,7 @@ document.addEventListener("click",async ev=>{
     case "style": st.style=v;saveSettings();break;
     case "welcome-done": st.baselines=(st.baselines||[]).filter(b=>b.name&&num(b.r)>0);st.onboarded=true;await saveSettings();flush();$("#main").scrollTop=0;break;
     case "sex": st.sex=st.sex===v?"":v;saveSettings();break;
+    case "emph": {const [m,e]=v.split("|");if(MUSCLES.includes(m)&&EMPHASIS[e]){st.emphasis={...(st.emphasis||{}),[m]:e};saveSettings();}break;}
     case "garmin-on": st.garmin={...(st.garmin||{}),enabled:v==="1"};saveSettings();if(v==="1")garminSync(true);break;
     case "garmin-sync": garminSync(true);break;
     case "garmin-diag": {toast("Asking Garmin…");const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:3,debug:true}});
@@ -1842,7 +1922,7 @@ document.addEventListener("input",ev=>{
     case "tweak": S.tweak=t.value;break;
     case "hist-ex": S.histEx=t.value;render();break;
     case "set": {const ex=d.exercises[+t.dataset.i], st0=ex.sets[+t.dataset.j];st0[t.dataset.f]=t.dataset.f==="rir"?(/^[0-3]$/.test(t.value)?t.value:""):t.value.replace(/[^0-9.,]/g,"");saveDraftSoon();
-      const el=$(`#pr-${t.dataset.i}-${t.dataset.j}`);if(el)el.innerHTML=isPR(st0,bestBefore(ex.name,d.date,d.id,d.editing?d.savedAt:Infinity))?`<span class="pr" title="Personal record">PR</span>`:"";break;}
+      {const pj=prSetIndex(ex.sets,bestBefore(ex.name,d.date,d.id,d.editing?d.savedAt:Infinity));ex.sets.forEach((_,jj)=>{const el=$(`#pr-${t.dataset.i}-${jj}`);if(el)el.innerHTML=jj===pj?`<span class="pr" title="Personal record">PR</span>`:"";});}break;}
     case "d-date": d.date=t.value||todayISO();saveDraftSoon();break;
     case "d-where": d.where=t.value;saveDraftSoon();break;
     case "d-note": d.note=t.value;saveDraftSoon();break;
