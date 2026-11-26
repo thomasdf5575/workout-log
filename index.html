@@ -1605,7 +1605,8 @@ document.addEventListener("click",async ev=>{
     case "garmin-on": st.garmin={...(st.garmin||{}),enabled:v==="1"};saveSettings();if(v==="1")garminSync(true);break;
     case "garmin-sync": garminSync(true);break;
     case "garmin-diag": {toast("Asking Garmin…");const {data,error}=await sb.functions.invoke("garmin-sync",{body:{today:todayISO(),days:3,debug:true}});
-      const txt=JSON.stringify(error?{error:String(error.message||error)}:data,null,1);try{await navigator.clipboard.writeText(txt);toast("Diagnostics copied.");}catch(e){toast("Couldn't copy to the clipboard.");}return;}
+      let body=data;if(error){body={error:String(error.message||error),status:error.context&&error.context.status};try{body.reply=await error.context.json();}catch(e){}}
+      const txt=JSON.stringify(body,null,1);try{await navigator.clipboard.writeText(txt);toast("Diagnostics copied.");}catch(e){toast("Couldn't copy to the clipboard.");}return;}
     case "weight-add": {const kgv=num($("#pW").value);if(!(kgv>=25&&kgv<=350)){toast("Enter your weight in kg, e.g. 78.4.");return;}st.personal=st.personal||{};const t=todayISO();st.personal.weights=[{date:t,kg:Math.round(kgv*10)/10},...(st.personal.weights||[]).filter(x=>x.date!==t)].slice(0,120);saveSettings();toast("Weight saved.");break;}
     case "weight-del": st.personal.weights=(st.personal.weights||[]).filter(x=>x.date!==v);saveSettings();break;
     case "priority": st.priority=PRIORITIES[v]?v:"both";saveSettings();break;
