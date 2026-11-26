@@ -128,17 +128,18 @@ Deno.serve(async (req) => {
 
     for (const x of list(raw.dailies, "dailySummaries")) {
       const r = at(dateOf(x, "calendarDate", "summaryDate", "date"));
-      r.rhr = num(x, "restingHeartRate", "restingHeartRateInBeatsPerMinute", "values.restingHR");
-      r.bbWake = num(x, "bodyBatteryAtWakeTime", "values.bodyBatteryAtWakeTime");
-      r.bbHigh = num(x, "bodyBatteryHighestValue", "values.bodyBatteryHighestValue");
-      r.stress = num(x, "averageStressLevel", "values.averageStressLevel");
-      r.steps = num(x, "totalSteps", "values.totalSteps");
+      r.rhr = num(x, "heartRate.restingValue", "restingHeartRate");
+      r.bbHigh = num(x, "bodyBattery.maxValue", "bodyBatteryHighestValue");
+      r.bbLow = num(x, "bodyBattery.minValue", "bodyBatteryLowestValue");
+      r.stress = num(x, "stress.avgLevel", "averageStressLevel");
+      r.steps = num(x, "movement.steps.value", "totalSteps");
     }
     for (const x0 of list(raw.sleep, "dailySleepSummaries", "sleepSummaries")) {
       const x = isObj(x0?.dailySleepDTO) ? x0.dailySleepDTO : x0;
       const r = at(dateOf(x, "calendarDate", "sleepDate", "date"));
       r.sleepSec = num(x, "sleepTimeSeconds", "totalSleepTimeSeconds", "sleepTimeInSeconds", "durationInSeconds");
       r.sleepScore = num(x, "sleepScores.overall.value", "overallSleepScore.value", "sleepScore", "overallSleepScore");
+      r.sleepEnd = num(x, "sleepEndTimestampGMT"); // epoch ms, used for the Body Battery reading at wake
     }
     for (const x of list(raw.hrv, "hrvSummaries")) {
       const r = at(dateOf(x, "calendarDate", "date"));
@@ -150,15 +151,22 @@ Deno.serve(async (req) => {
     }
     for (const x of list(raw.bodyBattery)) {
       const r = at(dateOf(x, "date", "calendarDate"));
-      const vals = (Array.isArray(x?.bodyBatteryValuesArray) ? x.bodyBatteryValuesArray : [])
-        .map((v: any) => (Array.isArray(v) ? Number(v[1]) : NaN)).filter(Number.isFinite);
-      if (vals.length && r.bbHigh == null) r.bbHigh = Math.max(...vals);
-      if (r.bbWake == null && r.bbHigh != null) r.bbWake = r.bbHigh; // morning peak, until the wake value is confirmed
+      // [[epoch ms, level], ...] through the day.
+      const pts = (Array.isArray(x?.bodyBatteryValuesArray) ? x.bodyBatteryValuesArray : [])
+        .map((v: any) => (Array.isArray(v) ? [Number(v[0]), Number(v[1])] : [NaN, NaN]))
+        .filter(([t, v]: number[]) => Number.isFinite(t) && Number.isFinite(v))
+        .sort((a: number[], b: number[]) => a[0] - b[0]);
+      if (pts.length && r.bbHigh == null) r.bbHigh = Math.max(...pts.map((p: number[]) => p[1]));
+      // At wake: the first reading from 10 min before the end of sleep onwards.
+      const woke = r.sleepEnd ? pts.find((p: number[]) => p[0] >= r.sleepEnd - 600000) : null;
+      if (woke) r.bbWake = woke[1];
     }
     for (const x of list(raw.weight, "dailyWeightSummaries", "dateWeightList")) {
       const r = at(dateOf(x, "summaryDate", "calendarDate", "date"));
-      const w = kg(num(x, "latestWeight.weight", "weight", "allWeightMetrics.0.weight"));
+      const w = kg(num(x, "latestWeight.weight", "weight"));
       if (w) r.weightKg = w;
+      const bf = num(x, "latestWeight.bodyFat");
+      if (bf) r.bodyFat = bf;
     }
 
     // 6. Activities.
