@@ -87,6 +87,9 @@ create table if not exists public.ai_calls (
   prompt_chars int
 );
 alter table public.ai_calls enable row level security;
+-- New tables aren't always exposed to the API roles automatically: grant explicitly.
+grant select, insert on public.ai_calls to authenticated;
+grant usage, select on sequence public.ai_calls_id_seq to authenticated;
 do $$
 begin
   if not exists (select 1 from pg_policies where schemaname='public' and tablename='ai_calls' and policyname='insert own calls') then
