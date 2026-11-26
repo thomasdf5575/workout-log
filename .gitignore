@@ -1,0 +1,21 @@
+# OS and editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# Screenshots and scratch output from local checks (save these outside the repo)
+*.png
+!icons/*.png
+screenshots/
+tmp/
+
+# Local tooling
+node_modules/
+supabase/.temp/
+.env
+.env.*
+
+# Deploy staging folder built by the workflow
+_site/

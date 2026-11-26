@@ -24,6 +24,7 @@ Personal workout-logging PWA for one user (the repo owner). No build step, no pa
 - Keep paths relative (`icons/...`, `./sw.js`): the site is served from the `/workout-log/` subpath.
 - Changes to `schema.sql` or `index.ts` don't deploy automatically. Tell the owner exactly what to run or paste in Supabase.
 - Never put secrets in the repo. The Anthropic key lives only in Supabase Edge Function secrets.
+- Keep the repo root clean: save screenshots, test scripts and other scratch output outside the repo (e.g. the session scratchpad), never in it. `.gitignore` blocks common junk; run `git status` before every commit and stage files by name rather than `git add -A`.
 
 ## Deploy
 - `.github/workflows/deploy.yml` publishes to GitHub Pages on every push to `main`: https://thomasdf5575.github.io/workout-log/
