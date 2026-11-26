@@ -749,6 +749,7 @@ function daysSince(){
   const d={};const t=todayISO();const mark=(m,n)=>{if(!MUSCLES.includes(m))return;if(d[m]===undefined||n<d[m])d[m]=n;};
   for(const s of S.sessions){const n=daysBetween(s.date,t);for(const e of s.exercises||[]){const mm=musclesOf(e);[...mm.primary,...mm.secondary].forEach(m=>mark(m,n));}
     if(s.wod)(s.wod.movements||[]).forEach(m=>[...(m.muscles||[]),...(m.secondary||[])].forEach(x=>mark(x,n)));}
+  for(const a of otherActs(35)) (ACT_MUSCLES[actKind(a)]||[]).forEach(m=>mark(m,daysBetween(actDate(a),t)));
   return d;
 }
 // Consecutive weeks (7-day blocks back from today) with at least one session, stopping at a
@@ -851,6 +852,64 @@ function readinessPrompt(){
   return `\n- Recovery today (from the trainee's watch): ${r.signals.map(s=>s.txt).join(", ")}.${r.level?` Suggested energy: ${r.level}.`:""}${n>=3?` Poor recovery on ${n} of the last 7 days.`:""}`;
 }
 
+/* Other activities from the watch (rules A1-A3) and check-in questions (Q1-Q4). */
+const LEGS=["quads","hamstrings","glutes","calves"];
+const ACT_KINDS=[[/hik/,"hike"],[/run/,"run"],[/cycl|bik|ride|spin/,"ride"],[/swim/,"swim"],[/row/,"row"],[/tennis|badminton|squash|padel|pickleball|racket/,"racket"],[/walk/,"walk"]];
+// A1: muscles each activity loads. The watch's Strength, Cardio and HIIT are logged in the app instead.
+const ACT_MUSCLES={run:LEGS,hike:LEGS,walk:["quads","glutes","calves"],ride:["quads","glutes"],swim:["back","shoulders"],row:["back","quads","hamstrings"],racket:["quads","calves"]};
+const ACT_WORD={run:["run","runs"],hike:["hike","hikes"],walk:["walk","walks"],ride:["ride","rides"],swim:["swim","swims"],row:["row","rows"],racket:["racket session","racket sessions"]};
+function actKind(a){const t=String(a.type||"").toLowerCase();if(/strength|cardio|hiit|yoga|pilates|breath|meditat|mobility|stretch|indoor_climb/.test(t))return null;for(const [re,k] of ACT_KINDS)if(re.test(t))return k;return null;}
+const actDate=a=>String(a.startLocal||a.start||"").slice(0,10);
+const actMin=a=>(a.sec||0)/60;
+// A2: counts as recent muscle use from 30 min (walks from 60 min). Not counted as sets.
+function otherActs(days){
+  if(!garminOn()) return []; const from=addDays(todayISO(),-(days-1));
+  return (S.garmin.acts||[]).filter(a=>{const k=actKind(a);return k&&actDate(a)>=from&&actMin(a)>=(k==="walk"?60:30);});
+}
+// A3: big leg day.
+function bigLeg(a){
+  const k=actKind(a), m=actMin(a); if(!k||!(ACT_MUSCLES[k]||[]).some(x=>LEGS.includes(x))) return false;
+  return (k==="run"&&(m>=60||(a.m||0)>=10000))||(k==="ride"&&m>=120)||(k==="hike"&&m>=150)||(a.te||0)>=4.5;
+}
+function actText(a){const k=actKind(a);return `${ACT_WORD[k]?ACT_WORD[k][0]:a.type} of ${durText(a.sec)}${a.m>=1000?`, ${(a.m/1000).toFixed(1)} km`:""}`;}
+function whenText(d){const n=daysBetween(d,todayISO());return n===0?"today":n===1?"yesterday":`${n} days ago`;}
+function otherSummary(days){
+  const by={};for(const a of otherActs(days)){const k=actKind(a);(by[k]=by[k]||{n:0,m:0}).n++;by[k].m+=a.m||0;}
+  return Object.entries(by).map(([k,x])=>`${x.n} ${ACT_WORD[k][x.n===1?0:1]}${x.m>=1000?` · ${Math.round(x.m/1000)} km`:""}`).join(", ");
+}
+function otherPrompt(){
+  const acts=otherActs(7); if(!acts.length) return "";
+  return `OTHER TRAINING FROM THE WATCH, LAST 7 DAYS (already counted in days since trained; not counted as sets): ${acts.slice(0,8).map(a=>`${actDate(a)} ${actText(a)}${a.te?` (training effect ${a.te.toFixed(1)})`:""}`).join("; ")}\n`;
+}
+// Check-ins: asked on the Plan page before generating, at most once a day; answers go to the AI.
+function askState(){const a=ls.get(k("ask"));return a&&a.date===todayISO()?a:{date:todayISO(),ans:{}};}
+function checkins(){
+  if(!garminOn()) return [];
+  const g=S.gen, t=todayISO(), mix=mixOf(g), out=[], acts=S.garmin.acts||[];
+  const legsPossible=mix>0&&(g.focus==="full"||g.focus==="lower"||(g.focus==="custom"&&(g.muscles||[]).some(m=>LEGS.includes(m))));
+  // Q1: big leg day today or yesterday. Q2: one 2 days ago lasting 2.5 h or more.
+  const leg=acts.filter(a=>bigLeg(a)&&(daysBetween(actDate(a),t)<=1||(daysBetween(actDate(a),t)===2&&actMin(a)>=150))).sort((a,b)=>actDate(b).localeCompare(actDate(a)))[0];
+  if(leg&&legsPossible){const ctx=`${actText(leg)} ${whenText(actDate(leg))}`;
+    out.push({id:"legs",ctx,text:`You did a ${ctx}. Legs are probably still recovering.`,opts:[["upper","Upper body instead"],["light","Light legs"],["keep","Keep legs"]]});}
+  // Q3: hard session earlier today and the mix includes a WOD.
+  const hard=acts.find(a=>actDate(a)===t&&Math.max(a.te||0,a.teAn||0)>=4);
+  if(hard&&mix<100){const ctx=`${hard.name||hard.type} earlier today (training effect ${Math.max(hard.te||0,hard.teAn||0).toFixed(1)})`;
+    out.push({id:"hard",ctx,text:`You already did a hard session: ${ctx}.`,opts:[["strength","Strength only"],["shorter","Shorter WOD"],["keep","Keep"]]});}
+  // Q4: nothing on the watch and nothing logged for 10+ days.
+  const last=[...acts.map(actDate),...S.sessions.map(s=>s.date||"")].filter(Boolean).sort().pop();
+  if(last){const n=daysBetween(last,t);if(n>=10)out.push({id:"ease",ctx:`${n} days without training`,text:`No training for ${n} days. Ease back in?`,opts:[["yes","Yes, ease in"],["no","No, train normally"]]});}
+  return out;
+}
+const CHECKIN_RULE={
+  "legs|upper":"no leg training today","legs|light":"legs light only: about half the usual leg sets, RIR 3+, nothing heavy","legs|keep":"the trainee chose to train legs as normal",
+  "hard|strength":"strength only, no conditioning","hard|shorter":"keep the conditioning workout short and moderate","hard|keep":"the trainee chose the usual conditioning",
+  "ease|yes":"first session back: build it like a tired day, no new records","ease|no":"the trainee chose to train normally"
+};
+function checkinPrompt(){
+  const a=askState().ans, lines=Object.entries(a).map(([id,x])=>`${x.ctx}: ${CHECKIN_RULE[id+"|"+x.v]||x.v}`);
+  return lines.length?`\n- Check-in answers today: ${lines.join("; ")}.`:"";
+}
+
 /* Personal info: weight (latest of manual and Garmin wins), height and age. */
 function weightPoints(){
   const pts=((S.settings.personal||{}).weights||[]).map(w=>({date:w.date,kg:num(w.kg),src:"you"})).filter(w=>w.kg>0);
@@ -925,7 +984,7 @@ TODAY
 - Focus: ${focus}
 - Location: ${prof.name}. Equipment available: ${prof.eq.map(k=>EQUIP[k]).join(", ")||"none"} plus bodyweight.
 - Weights available here: ${weights.join("; ")||"not specified (assume a typical gym)"}. Prescribe ONLY these weights. If progression needs a weight that isn't available, progress reps, then sets, then a harder variation instead.
-- Today's instructions from the trainee (HIGHEST PRIORITY, override defaults where they conflict): ${g.note.trim()||"none"}
+- Today's instructions from the trainee (HIGHEST PRIORITY, override defaults where they conflict): ${g.note.trim()||"none"}${checkinPrompt()}
 
 TRAINEE
 - Priority: ${PRIORITY_RULE[pk]}
@@ -965,7 +1024,7 @@ CONDITIONING RULES
 - Weekly volume: each round of a WEIGHTED movement counts as 0.5 set for its main muscles and 0.25 for secondary muscles toward the weekly targets; take that into account.
 `}
 SETS PER MUSCLE, LAST 7 DAYS: ${MUSCLES.map(m=>`${m} ${vol[m]}`).join(", ")}
-DAYS SINCE LAST TRAINED: ${MUSCLES.map(m=>`${m} ${since[m]??"never/unknown"}`).join(", ")}
+${otherPrompt()}DAYS SINCE LAST TRAINED: ${MUSCLES.map(m=>`${m} ${since[m]??"never/unknown"}`).join(", ")}
 RECENT SESSIONS:
 ${recent}
 EXERCISE HISTORY AND STARTING NUMBERS (newest first, dates MM-DD; weight x reps, "80x5x2" = two sets of 80x5, @n = logged reps in reserve):
@@ -1251,6 +1310,13 @@ function viewPlan(){
   <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
     ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
   h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Badminton tomorrow, keep arms fresh. Left knee a bit sore. Only one workout this week, so I can go longer.">${esc(g.note)}</textarea></div>`;
+  const asks=checkins(), ans=askState().ans;
+  // Answered check-ins stay listed even when the answer changed the conditions (e.g. strength only).
+  for(const [id,a] of Object.entries(ans)) h+=`<p class="small" style="margin:0">✓ ${esc(cap(a.ctx))}: <b>${esc(a.label||a.v)}</b> <button class="btn ghost" data-a="ask-clear" data-v="${id}">Change</button></p>`;
+  for(const q of asks){
+    if(ans[q.id]) continue;
+    h+=`<div class="banner" role="status">${esc(q.text)}<div class="row" style="margin-top:8px">${q.opts.map(([v,l])=>`<button class="btn${v==="keep"||v==="no"?" ghost":""}" data-a="ask" data-v="${q.id}|${v}">${esc(l)}</button>`).join("")}</div></div>`;
+  }
   h+= S.genBusy
     ? `<div class="row"><span class="spinner" aria-hidden="true"></span><span>Building your session…</span><button class="btn ghost" data-a="gen-cancel">Cancel</button></div>`
     : `<button class="btn primary block" data-a="generate">${S.plan?"Generate a new session":"Generate session"}</button>`;
@@ -1285,9 +1351,10 @@ function viewWeek(){
   const v=weekVolume(),since=daysSince();const [tLo,tHi]=weeklyTarget(S.settings);const max=Math.max(tHi,...Object.values(v));
   const n=S.sessions.filter(s=>s.date>=addDays(todayISO(),-6)).length;
   if(!S.sessions.length) return `<section class="card"><h2>Your week</h2><p class="muted" style="margin:0">After your first logged session, this shows the sets per muscle over the last 7 days. The generator uses it to fill the gaps.</p></section>`;
-  return `<section class="card"><div class="row between"><h2>Last 7 days</h2><span class="muted small">${n} session${n===1?"":"s"}</span></div>
+  const oth=otherSummary(7);
+  return `<section class="card"><div class="row between"><h2>Last 7 days</h2><span class="muted small">${n} session${n===1?"":"s"}</span></div>${oth?`<p class="small" style="margin:0">Also from your watch: ${esc(oth)}</p>`:""}
   <div class="bars">${MUSCLES.map(m=>`<span>${cap(m)}</span><div class="t" title="${v[m]} sets"><div class="f ${v[m]<tLo?"low":""}" style="width:${100*v[m]/max}%"></div></div><span class="n">${Math.round(v[m]*2)/2} <span class="small muted">${since[m]===undefined?"(never)":since[m]===0?"(today)":`(${since[m]}d)`}</span></span>`).join("")}</div>
-  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}, ${esc(expOf(S.settings))}); amber means below ${tLo}. Brackets show days since each muscle was last trained.</p></section>`;
+  <p class="muted small" style="margin:0">Working sets per muscle: a set counts 1 for each main muscle and ½ for each assisting muscle. Your weekly target is ${tLo}–${tHi} sets per muscle (${esc(PRIORITIES[prioOf(S.settings)].label.toLowerCase())}, ${esc(expOf(S.settings))}); amber means below ${tLo}. Brackets show days since each muscle was last trained${garminOn()?", including runs, rides and other activities from your watch":""}.</p></section>`;
 }
 
 function viewLog(){
@@ -1570,6 +1637,12 @@ document.addEventListener("click",async ev=>{
     case "gen-energy": g.energy=v;g.energyPick=todayISO();break;
     case "ready-light": g.energy="tired";g.energyPick=todayISO();g.warnDone=todayISO();if(!/recovery-focused/i.test(g.note))g.note=(g.note.trim()?g.note.trim()+" ":"")+"Recovery-focused day: about half the usual sets, RIR 3+, nothing heavy.";break;
     case "ready-keep": g.warnDone=todayISO();break;
+    case "ask": {const [id,val]=v.split("|");const q=checkins().find(x=>x.id===id);if(!q)break;const a=askState();a.ans[id]={v:val,ctx:q.ctx,label:(q.opts.find(x=>x[0]===val)||[,val])[1]};ls.set(k("ask"),a);
+      if(id==="legs"&&val==="upper")g.focus="upper";
+      if(id==="hard"&&val==="strength")g.mix=100;
+      if(id==="ease"&&val==="yes"){g.energy="tired";g.energyPick=todayISO();}
+      break;}
+    case "ask-clear": {const a=askState();delete a.ans[v];ls.set(k("ask"),a);break;}
     case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
     case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
     case "generate": if(g.focus==="custom"&&!g.muscles.length){toast("Pick at least one muscle for a specific focus.");return;}generate();return;
