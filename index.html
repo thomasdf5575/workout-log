@@ -515,7 +515,7 @@ async function pull(){
     S.stale=false;S.lastErr="";
     const pend=queue(); const pk=new Set(pend.map(o=>o.key));
     if(!pk.has("settings")&&!settingsDirty){
-      if(st.data){S.settings=mergeSettings(st.data.data);S.gen={...S.settings.lastGen,acts:S.gen.acts||{},note:S.gen.note||""};}
+      if(st.data){S.settings=mergeSettings(st.data.data);const og=S.gen;S.gen={...S.settings.lastGen,acts:og.acts||{},note:og.note||"",energyPick:og.energyPick,energyAuto:og.energyAuto,warnDone:og.warnDone};if(og.energyPick===todayISO()||og.energyAuto===todayISO())S.gen.energy=og.energy;}
     }
     const map=new Map((ss.data||[]).map(r=>[r.id,{...clone(r.data),id:r.id}]));
     for(const o of pend){ if(o.table!=="sessions") continue; if(o.t==="upsert") map.set(o.row.id,{...o.row.data,id:o.row.id}); else map.delete(o.match.id); }
@@ -815,6 +815,42 @@ function garminKeyDays(){const e=S.settings.garmin&&S.settings.garmin.keyExpires
 function agoText(ts){const m=Math.round((Date.now()-ts)/60000);return m<1?"just now":m<60?`${m} min ago`:m<1440?`${Math.round(m/60)} h ago`:`${Math.round(m/1440)} d ago`;}
 const durText=sec=>{const m=Math.round((sec||0)/60);return m>=60?`${Math.floor(m/60)} h ${String(m%60).padStart(2,"0")}`:`${m} min`;};
 
+/* Readiness from Garmin (rules R1-R4, R6, R8, R9). Points per signal; a missing signal counts 0.
+   R1 sleep: <6 h or score <60 → -1; ≥7.5 h and score ≥80 → +1.  R2 HRV below baseline / LOW / UNBALANCED → -1.
+   R3 resting HR vs the previous 7 days' average: +5 → -1, +8 → -2.  R4 Body Battery at wake: <40 → -1, ≥75 → +1.
+   Total ≥+2 fresh, ≤-2 tired, else normal; fewer than 2 signals → no suggestion. */
+function readinessFor(day){
+  const g=S.garmin.days||{}, x=g[day]; if(!x) return null;
+  const sig=[]; const add=(pts,txt)=>sig.push({pts,txt});
+  if(x.sleepSec>0){const h=x.sleepSec/3600, sc=x.sleepScore;
+    add(h<6||(sc>0&&sc<60)?-1:h>=7.5&&sc>=80?1:0,`slept ${durText(x.sleepSec)}${sc?` (score ${sc})`:""}`);}
+  if(x.hrv>0){const st=String(x.hrvStatus||"").toUpperCase(), low=(x.hrvLow>0&&x.hrv<x.hrvLow)||st==="LOW"||st==="UNBALANCED"||st==="POOR";
+    add(low?-1:0,`HRV ${x.hrv} ms${low?" (below baseline)":x.hrvLow>0&&x.hrvHigh>0?` (baseline ${x.hrvLow}-${x.hrvHigh})`:""}`);}
+  if(x.rhr>0){const prev=[];for(let i=1;i<=7;i++){const y=g[addDays(day,-i)];if(y&&y.rhr>0)prev.push(y.rhr);}
+    if(prev.length>=3){const avg=prev.reduce((a,b)=>a+b,0)/prev.length, d=Math.round(x.rhr-avg);
+      add(d>=8?-2:d>=5?-1:0,`resting HR ${x.rhr}${d?` (${d>0?"+":""}${d} vs 7-day avg)`:""}`);}}
+  if(x.bbWake>0) add(x.bbWake<40?-1:x.bbWake>=75?1:0,`Body Battery ${x.bbWake} at wake`);
+  if(sig.length<2) return {day,signals:sig,total:null,level:null};
+  const total=sig.reduce((a,b)=>a+b.pts,0);
+  return {day,signals:sig,total,level:total>=2?"fresh":total<=-2?"tired":"normal"};
+}
+function readinessToday(){return garminOn()?readinessFor(todayISO()):null;}
+// R8: HRV low 3 nights in a row, resting HR +8 or more, or total ≤ -4.
+function readinessWarning(r){
+  if(!r||r.total==null) return null;
+  const g=S.garmin.days||{}, t=todayISO();
+  const lowHrv=[0,1,2].every(i=>{const x=g[addDays(t,-i)];if(!x||!(x.hrv>0))return false;const st=String(x.hrvStatus||"").toUpperCase();return (x.hrvLow>0&&x.hrv<x.hrvLow)||st==="LOW"||st==="UNBALANCED"||st==="POOR";});
+  const rhrHigh=r.signals.some(s=>s.pts<=-2&&s.txt.startsWith("resting HR"));
+  return lowHrv?"HRV has been below your baseline 3 nights in a row":rhrHigh?"your resting heart rate is 8+ above your 7-day average":r.total<=-4?"several recovery signals are low":null;
+}
+// R9: tired days among the last 7.
+function tiredDays7(){let n=0;for(let i=0;i<7;i++){const r=readinessFor(addDays(todayISO(),-i));if(r&&r.level==="tired")n++;}return n;}
+function readinessPrompt(){
+  const r=readinessToday(); if(!r||!r.signals.length) return "";
+  const n=tiredDays7();
+  return `\n- Recovery today (from the trainee's watch): ${r.signals.map(s=>s.txt).join(", ")}.${r.level?` Suggested energy: ${r.level}.`:""}${n>=3?` Poor recovery on ${n} of the last 7 days.`:""}`;
+}
+
 /* Personal info: weight (latest of manual and Garmin wins), height and age. */
 function weightPoints(){
   const pts=((S.settings.personal||{}).weights||[]).map(w=>({date:w.date,kg:num(w.kg),src:"you"})).filter(w=>w.kg>0);
@@ -885,7 +921,7 @@ The trainee chose 100% conditioning: "exercises" MUST be an empty list. No stren
 TODAY
 - Date: ${todayISO()}
 - Time available: ${g.dur} minutes in total including warm-up. ${what==="strength"?"Budget ~2.5-3 min per working set for compounds incl. rest, ~2 min for isolation, 5-8 min warm-up.":what==="hybrid"?`Split: ~10 min warm-up, ~${sMin} min of strength work (${mix}%, sized with the per-set budget: ~2.5-3 min per compound set, ~2 min per isolation set), a conditioning workout of ~${cMin} min (${100-mix}%), ~5 min cool-down.`:`Split: 8-12 min warm-up, a conditioning workout of ~${cMin} min (time cap or duration up to 30 min; if more time is left, extend the warm-up with skill practice for the day's movements and the cool-down with easy cardio and mobility), ~5 min cool-down.`}
-- Energy: ${g.energy} (fresh = full volume, may push${what!=="strength"?", a longer or heavier workout is fine":""}; normal = standard; tired = ~30% fewer sets, keep last weights or ~10% lighter, RIR 2-3, no new records, prefer stable/machine variants${what!=="strength"?"; a short or medium workout at moderate loads, no max efforts":""}).
+- Energy: ${g.energy} (fresh = full volume, may push${what!=="strength"?", a longer or heavier workout is fine":""}; normal = standard; tired = ~30% fewer sets, keep last weights or ~10% lighter, RIR 2-3, no new records, prefer stable/machine variants${what!=="strength"?"; a short or medium workout at moderate loads, no max efforts":""}).${readinessPrompt()}
 - Focus: ${focus}
 - Location: ${prof.name}. Equipment available: ${prof.eq.map(k=>EQUIP[k]).join(", ")||"none"} plus bodyweight.
 - Weights available here: ${weights.join("; ")||"not specified (assume a typical gym)"}. Prescribe ONLY these weights. If progression needs a weight that isn't available, progress reps, then sets, then a harder variation instead.
@@ -915,7 +951,7 @@ ${what==="conditioning"?`WEEKLY CONTEXT
 `}
 DELOADS (lighter sessions only when needed)
 - Consecutive weeks of training since the last lighter session or break: ${blk.weeks}. Last deload: ${blk.lastDeload||"none logged"}. STALLED lifts: ${stalled.join(", ")||"none"}.
-- Make today a deload ("deload": true) if 2 or more main lifts are STALLED, or energy is "tired" after 4+ consecutive weeks, or the trainee asks for it. Deload = same exercises, about half the sets, same or ~10% lighter weights, RIR 4+, nothing close to failure. Say why in the summary.
+- Make today a deload ("deload": true) if 2 or more main lifts are STALLED, or energy is "tired" after 4+ consecutive weeks,${tiredDays7()>=3?" or recovery was poor on 3+ of the last 7 days after 3+ consecutive weeks,":""} or the trainee asks for it. Deload = same exercises, about half the sets, same or ~10% lighter weights, RIR 4+, nothing close to failure. Say why in the summary.
 - If none of those apply but it has been 7+ consecutive weeks, train normally and suggest a lighter session soon in the summary.${what!=="strength"?" A deload day's conditioning is short and easy: moderate pace, light loads.":""}
 ${what==="strength"?"":`
 CONDITIONING RULES
@@ -1200,7 +1236,9 @@ function viewWelcome(){
   return h;
 }
 function viewPlan(){
-  const g=S.gen, st=S.settings, kd=garminKeyDays();
+  const g=S.gen, st=S.settings, kd=garminKeyDays(), rd=readinessToday(), warn=readinessWarning(rd);
+  // Pre-select the Garmin suggestion once a day, unless the trainee already chose today.
+  if(rd&&rd.level&&g.energyPick!==todayISO()&&g.energyAuto!==todayISO()){g.energy=rd.level;g.energyAuto=todayISO();}
   let h=(kd!==null&&kd<=7?`<div class="banner">${kd<0?"Your Garmin key has expired.":`Your Garmin key expires ${kd===0?"today":kd===1?"tomorrow":`in ${kd} days`}.`} Create a new one in Garmin Connect and update the GARMIN_API_KEY secret in Supabase (Setup → Garmin).</div>`:"")+`<section class="card" aria-labelledby="bh"><h2 id="bh">Build today's session</h2>
   <div class="field"><label class="lbl" for="dur">Time available</label><div class="dur"><input type="range" id="dur" min="20" max="150" step="5" value="${g.dur}"><output id="durOut">${g.dur} min</output></div></div>
   <div class="field"><label class="lbl" for="mix">Strength or conditioning (WOD)</label>
@@ -1208,7 +1246,8 @@ function viewPlan(){
     <input type="range" id="mix" min="0" max="100" step="25" value="${100-mixOf(g)}" aria-valuetext="${esc(mixText(g.dur,mixOf(g)))}">
     <output id="mixOut" class="small">${esc(mixText(g.dur,mixOf(g)))}</output></div>
   <div class="field"><p class="lbl">Where</p><div class="seg">${st.profiles.map(p=>chip(p.name,g.where===p.id,"gen-where",p.id)).join("")}</div></div>
-  <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div></div>
+  <div class="field"><p class="lbl">How you feel</p><div class="seg">${[["fresh","Fresh"],["normal","Normal"],["tired","Tired"]].map(([k,l])=>chip(l,g.energy===k,"gen-energy",k)).join("")}</div>${rd&&rd.signals.length?`<p class="muted small" style="margin:6px 0 0">${rd.level?`<b>${cap(rd.level)}</b> suggested from Garmin: `:"From Garmin: "}${esc(rd.signals.map(s=>s.txt).join(", "))}${rd.level&&g.energy!==rd.level?". You picked something else, that's fine.":"."}</p>`:""}</div>
+  ${warn&&S.gen.warnDone!==todayISO()?`<div class="banner" role="status">Take it easy today? ${esc(cap(warn))}.<div class="row" style="margin-top:8px"><button class="btn" data-a="ready-light">Light session</button><button class="btn ghost" data-a="ready-keep">Train as planned</button></div></div>`:""}
   <div class="field"><p class="lbl">Focus</p><div class="seg">${Object.entries(FOCUS).map(([k,l])=>chip(l,g.focus===k,"gen-focus",k)).join("")}</div>
     ${g.focus==="custom"?`<div class="seg" style="margin-top:8px" aria-label="Muscles to focus on">${MUSCLES.map(mu=>chip(cap(mu),g.muscles.includes(mu),"gen-muscle",mu,"sm")).join("")}</div>`:""}</div>`;
   h+=`<div class="field"><label class="lbl" for="genNote">Anything else today</label><textarea id="genNote" data-in="gen-note" placeholder="e.g. Badminton tomorrow, keep arms fresh. Left knee a bit sore. Only one workout this week, so I can go longer.">${esc(g.note)}</textarea></div>`;
@@ -1528,7 +1567,9 @@ document.addEventListener("click",async ev=>{
   switch(a){
     case "tab": S.tab=v;S.confirm=null;S.setupPage=null;render();$("#main").scrollTop=0;return;
     case "gen-where": g.where=v;break;
-    case "gen-energy": g.energy=v;break;
+    case "gen-energy": g.energy=v;g.energyPick=todayISO();break;
+    case "ready-light": g.energy="tired";g.energyPick=todayISO();g.warnDone=todayISO();if(!/recovery-focused/i.test(g.note))g.note=(g.note.trim()?g.note.trim()+" ":"")+"Recovery-focused day: about half the usual sets, RIR 3+, nothing heavy.";break;
+    case "ready-keep": g.warnDone=todayISO();break;
     case "gen-focus": if(g.focus!==v){g.focus=v;g.muscles=[];}break;
     case "gen-muscle": g.focus="custom";g.muscles=g.muscles.includes(v)?g.muscles.filter(x=>x!==v):[...g.muscles,v];break;
     case "generate": if(g.focus==="custom"&&!g.muscles.length){toast("Pick at least one muscle for a specific focus.");return;}generate();return;
